@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useLabelStore } from './store';
 import { createDraft, saveLabel, isLabelComplete, getDraftLabel } from './service';
+import { readFormDraft, readLastFormDraft, clearFormDraft } from './draft';
 import { SelectWithAdd } from './components/SelectWithAdd';
 import { useRootStore } from '../../infrastructure/store';
 import type { SampleStatus } from '../../infrastructure/types';
@@ -29,6 +30,7 @@ export function LabelPage() {
     grades,
     loadOptions,
     loadFromSample,
+    applyFormFields,
     setField,
     setSampleId,
     addCategory,
@@ -37,20 +39,53 @@ export function LabelPage() {
 
   const [error, setError] = useState('');
   const [ready, setReady] = useState(false);
+  // 是否从本地草稿恢复过内容（用于给出"内容已恢复"的明确反馈）
+  const [restored, setRestored] = useState(false);
 
-  // 初始化：加载选项；有 sampleId 则回填草稿，否则创建新草稿并改写路由
+  // 初始化：加载选项 → 优先恢复未提交的本地草稿 → 否则按样品/新建草稿
   useEffect(() => {
     let cancelled = false;
     (async () => {
       await loadOptions();
+      if (cancelled) return;
+
+      // ① 带 sampleId（正常进入 / 刷新后）：DB 草稿 + 本地未提交内容还原
       if (sampleId) {
         const draft = await getDraftLabel(sampleId);
-        if (draft && !cancelled) {
+        if (cancelled) return;
+        if (draft) {
           loadFromSample(draft);
           setReady(true);
+          const form = readFormDraft(sampleId);
+          if (form) {
+            // 覆盖为刷新前已输入、尚未提交的值
+            applyFormFields(form);
+            setRestored(true);
+            return;
+          }
           return;
         }
       }
+
+      // ② 无 sampleId 但存在上次未提交的草稿（如误关页面后重开）：直接续填，不新建空草稿
+      const last = readLastFormDraft();
+      if (last) {
+        const draft = await getDraftLabel(last.sampleId);
+        if (cancelled) return;
+        if (draft) {
+          loadFromSample(draft);
+          applyFormFields(last.fields);
+          setSampleId(last.sampleId);
+          setReady(true);
+          setRestored(true);
+          navigate(`/label/${last.sampleId}`, { replace: true });
+          return;
+        }
+        // 草稿对应的样品已被删除：清理无效缓冲，走新建流程
+        clearFormDraft(last.sampleId);
+      }
+
+      // ③ 兜底：新建空草稿
       const created = await createDraft(deviceInfo);
       if (!cancelled) {
         setSampleId(created.id);
@@ -75,6 +110,8 @@ export function LabelPage() {
     const id = useLabelStore.getState().sampleId;
     if (!id) return;
     await saveLabel(id, input);
+    // 已提交：清除本地未提交缓冲，避免下次误恢复已入库的内容
+    clearFormDraft(id);
     navigate(`/quality/${id}`);
   };
 
@@ -153,6 +190,15 @@ export function LabelPage() {
           </div>
         )}
       </div>
+
+      {restored && (
+        <div
+          className="surface"
+          style={{ padding: '10px 14px', fontSize: 13, color: 'var(--primary)' }}
+        >
+          已恢复你上次未提交的填写内容，可继续编辑。
+        </div>
+      )}
 
       {error && <div style={{ color: '#c0392b', fontSize: 13 }}>{error}</div>}
 
