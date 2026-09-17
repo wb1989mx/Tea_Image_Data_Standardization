@@ -39,10 +39,31 @@ export const assetRepo: AssetRepository = {
     return db.assets.where('sampleId').equals(sampleId).toArray();
   },
   async put(asset: ImageAsset): Promise<void> {
-    await db.assets.put(asset);
+    // 关键一致性约束：assets 表与 sample.images[dimension] 内嵌快照是两份数据，
+    // 而质量页槽位、记录页缩略图、导出打包全部读取 sample 内的快照。
+    // 若只写 assets 表，编辑结果不会反映到界面（表现为「确认后无变化」）。
+    // 因此同事务双写：asset 落表 + 回写所属样品的对应槽位快照。
+    await db.transaction('rw', db.assets, db.samples, async () => {
+      await db.assets.put(asset);
+      const sample = await db.samples.get(asset.sampleId);
+      if (sample && sample.images) {
+        sample.images[asset.dimension] = asset;
+        await db.samples.put(sample);
+      }
+    });
   },
   async remove(id: string): Promise<void> {
-    await db.assets.delete(id);
+    // 同步摘除样品内嵌快照中的对应槽位，避免残留已删除资产
+    await db.transaction('rw', db.assets, db.samples, async () => {
+      const asset = await db.assets.get(id);
+      await db.assets.delete(id);
+      if (!asset) return;
+      const sample = await db.samples.get(asset.sampleId);
+      if (sample && sample.images && sample.images[asset.dimension]?.id === id) {
+        sample.images[asset.dimension] = null;
+        await db.samples.put(sample);
+      }
+    });
   }
 };
 
