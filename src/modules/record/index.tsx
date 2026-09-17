@@ -4,7 +4,7 @@ import type { Sample, QualityDimension } from '../../infrastructure/types';
 import { DIMENSION_LABEL } from '../../infrastructure/types';
 import { repositories } from '../../infrastructure/repository';
 import { bus } from '../../infrastructure/event-bus';
-import { useMediaQuery, formatTimestamp } from '../../infrastructure/utils';
+import { useMediaQuery, formatTimestamp, downloadBlob } from '../../infrastructure/utils';
 import { getExporter } from '../../infrastructure/capabilities';
 import {
   sampleFreeCode,
@@ -28,6 +28,9 @@ export function RecordPage() {
   const [samples, setSamples] = useState<Sample[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // 打包反馈：packing 防重复点击，notice 给出成功/失败结论（失败也能看到原因）
+  const [packing, setPacking] = useState(false);
+  const [notice, setNotice] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   const refresh = useCallback(async () => {
     const list = await repositories.sample.list();
@@ -80,17 +83,38 @@ export function RecordPage() {
     await refresh();
   };
 
+  // 一键打包：能力返回的是 ZIP Blob（纯生成），必须在此触发下载交付，
+  // 否则只是白白生成一份内存中的 Blob，界面不会有任何反应。
   const handlePack = async () => {
+    if (packing) return;
     if (!exporter) {
-      alert('导出模块未就绪');
+      setNotice({ type: 'err', text: '导出模块未就绪，请刷新页面后重试' });
       return;
     }
     const target = selected.length ? samples.filter((s) => selected.includes(s.id)) : samples;
     if (!target.length) {
-      alert('暂无可导出的样品');
+      setNotice({ type: 'err', text: '暂无可导出的样品' });
       return;
     }
-    await exporter(target);
+    setNotice(null);
+    setPacking(true);
+    try {
+      const blob = await exporter(target);
+      if (!blob || blob.size === 0) throw new Error('生成的打包文件为空');
+      const d = new Date();
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+      const filename = `tea-images-${stamp}.zip`;
+      downloadBlob(blob, filename);
+      setNotice({
+        type: 'ok',
+        text: `已导出 ${target.length} 个样品 · ${filename}（${(blob.size / 1024 / 1024).toFixed(2)} MB），请查看浏览器下载栏`
+      });
+    } catch (e) {
+      setNotice({ type: 'err', text: `打包失败：${e instanceof Error ? e.message : String(e)}` });
+    } finally {
+      setPacking(false);
+    }
   };
 
   if (!samples.length) {
@@ -119,10 +143,31 @@ export function RecordPage() {
         <button onClick={handleBulkRename} style={btn(false)}>
           批量自动编号
         </button>
-        <button onClick={handlePack} style={btn(true)}>
-          一键打包 ZIP
+        <button
+          onClick={handlePack}
+          disabled={packing}
+          style={{ ...btn(true), opacity: packing ? 0.7 : 1, cursor: packing ? 'wait' : 'pointer' }}
+        >
+          {packing ? '打包中…' : '一键打包 ZIP'}
         </button>
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+          未勾选时导出全部样品
+        </span>
       </div>
+
+      {notice && (
+        <div
+          className="surface"
+          style={{
+            padding: '10px 14px',
+            fontSize: 13,
+            color: notice.type === 'ok' ? 'var(--primary)' : '#c0392b',
+            borderColor: notice.type === 'ok' ? 'var(--primary)' : '#c0392b'
+          }}
+        >
+          {notice.text}
+        </div>
+      )}
 
       {isDesktop ? (
         <div className="surface" style={{ overflowX: 'auto' }}>
