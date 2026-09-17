@@ -1,4 +1,7 @@
-import { BrowserRouter, Routes, Route, Navigate, Outlet, NavLink } from 'react-router-dom';
+// HashRouter：GitHub Pages 子路径托管下，pathname 带 /Tea_Image_Data_Standardization/ 前缀，
+// BrowserRouter 的根路径路由永远无法匹配（且 Pages 不支持 SPA rewrite，刷新即 404）。
+// hash 路由只依赖 #/ 后的路径，与托管子路径完全解耦。
+import { HashRouter, Routes, Route, Navigate, Outlet, NavLink } from 'react-router-dom';
 import { useMediaQuery } from '../utils';
 import { LabelPage } from '../../modules/label';
 import { QualityPage } from '../../modules/quality';
@@ -114,7 +117,7 @@ function SettingsPage() {
 
 export function AppRouter() {
   return (
-    <BrowserRouter>
+    <HashRouter>
       <Routes>
         <Route element={<Shell />}>
           <Route path="/" element={<Navigate to="/label" replace />} />
@@ -124,8 +127,10 @@ export function AppRouter() {
           <Route path="/edit/:assetId" element={<ImageEditorPage />} />
           <Route path="/record" element={<RecordPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          {/* 兜底：未匹配路由一律回到登记页 */}
+          <Route path="*" element={<Navigate to="/label" replace />} />
         </Route>
       </Routes>
-    </BrowserRouter>
+    </HashRouter>
   );
 }
