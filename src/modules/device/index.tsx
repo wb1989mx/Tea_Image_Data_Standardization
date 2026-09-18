@@ -9,4 +9,17 @@ import { getDeviceInfo, extractExifMakeModel } from './service';
 import { useRootStore } from '../../infrastructure/store';
 
 registerExifExtractor(extractExifMakeModel);
-getDeviceInfo().then((d) => useRootStore.getState().setDeviceInfo(d));
+
+// 启动期合并探测结果：已有值优先（来自持久化的用户手动修正），仅补空缺字段。
+// 若直接整体覆盖，设置页中手改的型号会在每次刷新后被探测结果冲掉。
+getDeviceInfo().then((detected) => {
+  const store = useRootStore.getState();
+  const cur = store.deviceInfo;
+  store.setDeviceInfo({
+    model: cur.model ?? detected.model,
+    os: cur.os ?? detected.os,
+    browser: cur.browser ?? detected.browser,
+    exifMake: cur.exifMake ?? detected.exifMake,
+    exifModel: cur.exifModel ?? detected.exifModel
+  });
+});

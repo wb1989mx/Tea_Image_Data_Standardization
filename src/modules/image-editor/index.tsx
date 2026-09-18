@@ -40,6 +40,11 @@ export function ImageEditorPage() {
   const [profile, setProfile] = useState<ColorProfile | null>(null);
   const [applyColor, setApplyColor] = useState(false);
 
+  // 保存反馈：saving 防重复提交，saved 给出成功反馈后再返回，error 就地提示失败原因
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState('');
+
   const imgRef = useRef<HTMLImageElement | null>(null);
   const previewRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -86,42 +91,58 @@ export function ImageEditorPage() {
   }, [crop, completedCrop, scale, rotation, outputFormat, background, imgReady, applyColor, profile]);
 
   const handleConfirm = async () => {
-    if (!asset || !imgRef.current) return;
-    const c = currentPercent();
-    if (!c.width || !c.height) {
-      alert('请先框选裁剪区域');
+    if (saving || saved) return;
+    if (!asset || !imgRef.current) {
+      setError('图像尚未加载完成，请稍候再试');
       return;
     }
-    const img = imgRef.current;
-    const sx = img.naturalWidth / 100;
-    const sy = img.naturalHeight / 100;
-    const cropPx: PixelRect = {
-      x: c.x * sx,
-      y: c.y * sy,
-      width: c.width * sx,
-      height: c.height * sy
-    };
-    const params: EditParams = { outputSize, outputFormat, background };
-    const activeProfile = applyColor ? profile : null;
-    const blob = await renderCircleCrop(img, cropPx, params, rotation, scale, activeProfile);
-    const cropMeta: CropMeta = {
-      x: cropPx.x,
-      y: cropPx.y,
-      width: cropPx.width,
-      height: cropPx.height,
-      scale,
-      rotation,
-      outputSize,
-      outputFormat,
-      background
-    };
-    // 记录实际烘焙进 editedFile 的色彩参数（null=未应用），供记录/导出元数据使用
-    asset.colorProfile = activeProfile;
-    await saveEditedAsset(asset, blob, cropMeta);
-    navigate(`/quality/${asset.sampleId}`);
+    const c = currentPercent();
+    if (!c.width || !c.height) {
+      setError('请先在原图上框选裁剪区域');
+      return;
+    }
+    setError('');
+    setSaving(true);
+    try {
+      const img = imgRef.current;
+      const sx = img.naturalWidth / 100;
+      const sy = img.naturalHeight / 100;
+      const cropPx: PixelRect = {
+        x: c.x * sx,
+        y: c.y * sy,
+        width: c.width * sx,
+        height: c.height * sy
+      };
+      const params: EditParams = { outputSize, outputFormat, background };
+      const activeProfile = applyColor ? profile : null;
+      const blob = await renderCircleCrop(img, cropPx, params, rotation, scale, activeProfile);
+      if (!blob || blob.size === 0) throw new Error('生成图像为空，请调整裁剪区域后重试');
+      const cropMeta: CropMeta = {
+        x: cropPx.x,
+        y: cropPx.y,
+        width: cropPx.width,
+        height: cropPx.height,
+        scale,
+        rotation,
+        outputSize,
+        outputFormat,
+        background
+      };
+      // 记录实际烘焙进 editedFile 的色彩参数（null=未应用），供记录/导出元数据使用
+      asset.colorProfile = activeProfile;
+      await saveEditedAsset(asset, blob, cropMeta);
+      // 成功反馈：按钮短暂显示「已保存」再返回采集页（返回后槽位徽标同步为已确认）
+      setSaved(true);
+      setSaving(false);
+      setTimeout(() => navigate(`/quality/${asset.sampleId}`), 800);
+    } catch (e) {
+      setSaving(false);
+      setError(`保存失败：${e instanceof Error ? e.message : String(e)}（请重试）`);
+    }
   };
 
   const handleCancel = () => {
+    if (saving) return; // 保存过程中禁止离开，避免半途中断
     if (asset) navigate(`/quality/${asset.sampleId}`);
     else navigate('/record');
   };
@@ -141,7 +162,17 @@ export function ImageEditorPage() {
         style={{ padding: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
       >
         <div style={{ fontWeight: 600 }}>图像编辑 · {asset.dimension}</div>
-        <button onClick={handleCancel} style={{ color: 'var(--muted)', background: 'none', border: 'none' }}>
+        <button
+          onClick={handleCancel}
+          disabled={saving}
+          style={{
+            color: 'var(--muted)',
+            background: 'none',
+            border: 'none',
+            cursor: saving ? 'not-allowed' : 'pointer',
+            opacity: saving ? 0.5 : 1
+          }}
+        >
           取消
         </button>
       </div>
@@ -221,19 +252,40 @@ export function ImageEditorPage() {
         </div>
       </div>
 
+      {/* 保存状态提示：错误就地显示并保留在当前页，便于修正后重试 */}
+      {error && (
+        <div
+          className="surface"
+          style={{ padding: '10px 14px', color: '#c0392b', fontSize: 13, borderColor: '#c0392b' }}
+        >
+          {error}
+        </div>
+      )}
+      {saved && (
+        <div
+          className="surface"
+          style={{ padding: '10px 14px', color: 'var(--primary)', fontSize: 13 }}
+        >
+          已保存，正在返回采集页…
+        </div>
+      )}
+
       <button
         onClick={handleConfirm}
+        disabled={saving || saved}
         style={{
           padding: '14px',
           borderRadius: 'var(--radius)',
           border: 'none',
-          background: 'var(--primary)',
+          background: saved ? 'var(--muted)' : 'var(--primary)',
           color: '#fff',
           fontWeight: 600,
-          fontSize: 16
+          fontSize: 16,
+          cursor: saving || saved ? 'not-allowed' : 'pointer',
+          opacity: saving ? 0.75 : 1
         }}
       >
-        确认
+        {saved ? '已保存 ✓' : saving ? '保存中…' : '确认'}
       </button>
     </div>
   );

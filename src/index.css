@@ -2,7 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ===== 主题 Token：5 套视觉风格，仅改变 CSS 变量，不改变业务逻辑 ===== */
+/* ===== 主题 Token：3 套视觉风格，仅改变 CSS 变量，不改变业务逻辑 =====
+   （原 .theme-dark 暗黑科技风 / .theme-neumorphism 新拟态柔和风 已下线，
+    对应 token 块一并移除，避免留下永不命中的死样式） */
 :root,
 .theme-ios {
   --bg: #f5f5f7;
@@ -31,24 +33,6 @@
   --border: #e0e3e8;
   --radius: 16px;
 }
-.theme-dark {
-  --bg: #0f1115;
-  --surface: #1a1d23;
-  --text: #e8eaed;
-  --muted: #9aa0a6;
-  --primary: #2dd4a7;
-  --border: #2a2e36;
-  --radius: 12px;
-}
-.theme-neumorphism {
-  --bg: #e8eef3;
-  --surface: #e8eef3;
-  --text: #3a3f47;
-  --muted: #8a929c;
-  --primary: #5b8def;
-  --border: #cfd6de;
-  --radius: 18px;
-}
 
 body {
   margin: 0;
@@ -56,6 +40,18 @@ body {
   color: var(--text);
   font-family: -apple-system, system-ui, 'Segoe UI', Roboto, 'PingFang SC',
     'Microsoft YaHei', sans-serif;
+}
+
+/* ===== 移动端表单控件字号统一为 16px =====
+   iOS Safari 对 font-size < 16px 的 input/select/textarea 会在聚焦时自动放大整个页面，
+   这是「手机端页面被缩放、看全需手动缩回」的主因之一。
+   统一提升到 16px 可彻底消除该行为；桌面端维持各模块原有的紧凑字号（13px 等）。 */
+@media (max-width: 767px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
 }
 
 /* 通用表面卡片，供各模块复用 */

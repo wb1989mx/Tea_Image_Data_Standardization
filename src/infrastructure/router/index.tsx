@@ -61,10 +61,20 @@ function DesktopShell() {
 }
 
 // 手机端：底部导航 + 大按钮
+// 安全区：index.html 已开启 viewport-fit=cover，全面屏 iPhone 的 Home Indicator 会压住
+// 固定定位的底部导航，故导航与内容区都须叠加 env(safe-area-inset-bottom)。
+// 非全面屏设备该值为 0，calc 退化为原尺寸，视觉与改动前一致。
 function MobileShell() {
   return (
     <div className="flex flex-col min-h-screen" style={{ background: 'var(--bg)' }}>
-      <main style={{ flex: 1, padding: 16, paddingBottom: 80 }}>
+      <main
+        style={{
+          flex: 1,
+          padding: 16,
+          // 80px 为原留白基线，叠加安全区后导航升高多少、内容就相应让出多少
+          paddingBottom: 'calc(80px + env(safe-area-inset-bottom))'
+        }}
+      >
         <Outlet />
       </main>
       <nav
@@ -76,7 +86,7 @@ function MobileShell() {
           right: 0,
           display: 'flex',
           justifyContent: 'space-around',
-          padding: '12px 0',
+          padding: '12px 0 calc(12px + env(safe-area-inset-bottom))',
           borderTop: '1px solid var(--border)'
         }}
       >
