@@ -1,4 +1,5 @@
 import type { ImageAsset, CropMeta, OutputFormat, BackgroundMode, ColorProfile } from '../../infrastructure/types';
+import { COLOR_PARAM_KEYS, NEUTRAL_COLOR_PARAMS } from '../../infrastructure/types';
 import { repositories } from '../../infrastructure/repository';
 import { bus } from '../../infrastructure/event-bus';
 import { getColorBake } from '../../infrastructure/capabilities';
@@ -29,10 +30,20 @@ function canvasToBlob(canvas: HTMLCanvasElement, format: OutputFormat, quality =
   });
 }
 
-// 判断预设是否为「中性（不改动画面）」：用于默认是否应用矫正
+// 判断预设是否为「中性（不改动画面）」：用于默认是否应用矫正。
+//
+// 采用「遍历参数定义表」而非逐字段字面量比较：本函数是「是否执行烘焙」的闸门
+// （见下方 drawCircleCrop），一旦漏判新增参数，仅调整该参数的预设会被当作中性
+// 而整条跳过烘焙 —— 表现为开关已开、导出图却毫无变化。改为表驱动后，
+// PARAM_SPECS 新增参数时此判定自动跟随。
 export function isIdentityProfile(p: ColorProfile | null): boolean {
   if (!p) return true;
-  return p.temperature === 0 && p.tint === 0 && p.saturation === 1 && p.contrast === 1;
+  return COLOR_PARAM_KEYS.every((key) => {
+    const v = (p as unknown as Record<string, unknown>)[key];
+    // 缺失/非有限值视为中性，与 filterString 的回退行为保持一致
+    const n = typeof v === 'number' && Number.isFinite(v) ? v : NEUTRAL_COLOR_PARAMS[key];
+    return n === NEUTRAL_COLOR_PARAMS[key];
+  });
 }
 
 // 将裁剪框（自然像素）+ 旋转 + 缩放绘制到一个给定尺寸的 canvas（圆形蒙版）

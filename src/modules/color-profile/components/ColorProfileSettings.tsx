@@ -1,29 +1,49 @@
 import { useState } from 'react';
-import type { ColorProfile } from '../../../infrastructure/types';
+import type { ColorProfile, ColorParamKey, ParamSpec } from '../../../infrastructure/types';
+import {
+  PARAM_SPECS,
+  NEUTRAL_COLOR_PARAMS,
+  clampParam,
+  formatParam,
+  paramRangeText
+} from '../../../infrastructure/types';
 import { useMediaQuery } from '../../../infrastructure/utils';
 import { loadProfiles, saveProfiles, filterString, DEFAULT_PROFILES } from '../service';
 
 // 色彩映射表维护（设置页使用）：可增删改预设，并上传样图实时预览
 //
 // 响应式约定（移动端优先）：
-// 1) 桌面端为「左参数 / 右预览」两列；移动端改为单列，且预览块**排在参数之前**，
-//    保证进入页面即可看到预览，无需横向缩放或滚动。
+// 1) 桌面端为「左参数(定宽 280~320px) / 右预览(占满剩余)」两列；移动端改单列，
+//    且预览块**排在参数之前**，保证进入页面即可看到预览，无需横向缩放或滚动。
 // 2) 所有网格子项加 minWidth: 0 —— <input type="file"> 存在约 200px 的固有最小宽度，
 //    在固定两列网格中会撑破容器导致页面横向溢出，移动端浏览器随即整体缩小页面
 //    （用户感知为"必须缩放才能看全"）。
 // 3) 移动端表单控件字号由 index.css 的全局媒体查询统一提升至 16px（防 iOS 聚焦自动缩放），
 //    此处不再单独声明，避免两处事实来源。
+//
+// 参数区约定：
+// - 参数元信息（上下限/步长/中性值/单位/语义）全部来自 PARAM_SPECS，本文件不写死任何边界数值；
+//   新增参数只需在 PARAM_SPECS 追加一行，此处渲染、钳制、回显自动跟随。
+// - 数值输入采用「草稿缓冲」：编辑中保留用户原始文本（否则无法清空重输、前导负号会被吞），
+//   仅当可解析时提交；失焦时统一经 clampParam 钳制到上下限并按定义表小数位回显。
 export function ColorProfileSettings() {
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const [profiles, setProfiles] = useState<ColorProfile[]>(() => loadProfiles());
   const [active, setActive] = useState(0);
   const [testImg, setTestImg] = useState<string>('');
   const [saved, setSaved] = useState(false);
+  // 「按住看原图」：按下期间临时移除 filter，便于判断校准幅度
+  const [showOriginal, setShowOriginal] = useState(false);
 
   const current = profiles[active] ?? DEFAULT_PROFILES[0];
 
   const update = (patch: Partial<ColorProfile>) => {
     setProfiles((prev) => prev.map((p, i) => (i === active ? { ...p, ...patch } : p)));
+    setSaved(false);
+  };
+
+  const updateParam = (key: ColorParamKey, value: number) => {
+    setProfiles((prev) => prev.map((p, i) => (i === active ? { ...p, [key]: value } : p)));
     setSaved(false);
   };
 
@@ -33,9 +53,10 @@ export function ColorProfileSettings() {
   };
 
   const addNew = () => {
+    // 新预设初值直接取定义表的中性值集合，PARAM_SPECS 新增参数时自动带上
     setProfiles((prev) => [
       ...prev,
-      { deviceModel: '新设备', temperature: 0, tint: 0, saturation: 1, contrast: 1, presetName: '新预设' }
+      { deviceModel: '新设备', ...NEUTRAL_COLOR_PARAMS, presetName: '新预设' }
     ]);
     setActive(profiles.length);
     setSaved(false);
@@ -47,58 +68,99 @@ export function ColorProfileSettings() {
     setSaved(false);
   };
 
-  // ---- 参数列（预设名称 / 设备匹配 / 四项滑杆） ----
+  // ---- 参数列（预设名称 / 设备匹配 / 参数数字输入） ----
   const paramsCol = (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
-      <label style={{ fontSize: 13, color: 'var(--muted)' }}>预设名称</label>
-      <input
-        value={current.presetName}
-        onChange={(e) => update({ presetName: e.target.value })}
-        style={field}
-      />
-      <label style={{ fontSize: 13, color: 'var(--muted)' }}>匹配设备型号（* 为通配）</label>
-      <input
-        value={current.deviceModel}
-        onChange={(e) => update({ deviceModel: e.target.value })}
-        style={field}
-      />
-      <Slider label={`色温 ${current.temperature}`} min={-500} max={500} step={10} value={current.temperature} onChange={(v) => update({ temperature: v })} />
-      <Slider label={`色调 ${current.tint}`} min={-100} max={100} step={1} value={current.tint} onChange={(v) => update({ tint: v })} />
-      <Slider label={`饱和度 ${current.saturation.toFixed(2)}`} min={0.5} max={1.5} step={0.01} value={current.saturation} onChange={(v) => update({ saturation: v })} />
-      <Slider label={`对比度 ${current.contrast.toFixed(2)}`} min={0.5} max={1.5} step={0.01} value={current.contrast} onChange={(v) => update({ contrast: v })} />
+      {/* 预设名称与设备型号并排一行，压缩竖向空间 */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 8 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+          <span style={labelText}>预设名称</span>
+          <input
+            value={current.presetName}
+            onChange={(e) => update({ presetName: e.target.value })}
+            style={field}
+          />
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+          <span style={labelText}>匹配设备型号（* 通配）</span>
+          <input
+            value={current.deviceModel}
+            onChange={(e) => update({ deviceModel: e.target.value })}
+            style={field}
+          />
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+        {PARAM_SPECS.map((spec) => (
+          <ParamField
+            key={spec.key}
+            spec={spec}
+            value={current[spec.key]}
+            onChange={(v) => updateParam(spec.key, v)}
+          />
+        ))}
+      </div>
     </div>
   );
 
   // ---- 预览列（样图实时预览） ----
   const previewCol = (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
-      <label style={{ fontSize: 13, color: 'var(--muted)' }}>样图实时预览（上传测试）</label>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ ...labelText, flex: '1 1 auto' }}>样图实时预览（上传测试）</span>
+        <button
+          type="button"
+          disabled={!testImg}
+          onPointerDown={() => setShowOriginal(true)}
+          onPointerUp={() => setShowOriginal(false)}
+          onPointerLeave={() => setShowOriginal(false)}
+          onPointerCancel={() => setShowOriginal(false)}
+          style={{ ...btn(), padding: '4px 10px', fontSize: 12, opacity: testImg ? 1 : 0.5 }}
+        >
+          按住看原图
+        </button>
+      </div>
       <input
         type="file"
         accept="image/*"
         style={{ ...field, width: '100%' }}
         onChange={(e) => {
           const f = e.target.files?.[0];
-          if (f) setTestImg(URL.createObjectURL(f));
+          if (f) {
+            setTestImg(URL.createObjectURL(f));
+            setShowOriginal(false);
+          }
         }}
       />
+      {/* 底色固定为中性灰：色彩与明度判断不受主题切换干扰，是校色场景的标准做法 */}
       <div
         style={{
-          flex: isDesktop ? 1 : undefined,
-          minHeight: isDesktop ? 160 : 140,
+          height: isDesktop ? 'clamp(320px, 46vh, 560px)' : 'clamp(240px, 40vh, 420px)',
           borderRadius: 'var(--radius)',
           border: '1px solid var(--border)',
-          background: 'var(--bg)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          overflow: 'hidden'
+          background: PREVIEW_BG,
+          display: 'grid',
+          placeItems: 'center',
+          overflow: 'hidden',
+          padding: 8
         }}
       >
         {testImg ? (
-          <img src={testImg} alt="预览" style={{ maxWidth: '100%', maxHeight: 220, filter: filterString(current) }} />
+          <img
+            src={testImg}
+            alt="预览"
+            style={{
+              maxWidth: '100%',
+              maxHeight: '100%',
+              width: 'auto',
+              height: 'auto',
+              objectFit: 'contain',
+              filter: showOriginal ? 'none' : filterString(current)
+            }}
+          />
         ) : (
-          <span style={{ color: 'var(--muted)', fontSize: 13 }}>未上传样图</span>
+          <span style={{ color: '#FFFFFF', fontSize: 13 }}>未上传样图</span>
         )}
       </div>
     </div>
@@ -134,8 +196,10 @@ export function ColorProfileSettings() {
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: isDesktop ? '1fr 1fr' : '1fr',
-          gap: 12
+          // 参数列定宽（280~320px）而非等分：参数区只占必要宽度，其余全部让给预览
+          gridTemplateColumns: isDesktop ? 'minmax(280px, 320px) minmax(0, 1fr)' : '1fr',
+          gap: 14,
+          alignItems: 'start'
         }}
       >
         {isDesktop ? (
@@ -154,43 +218,98 @@ export function ColorProfileSettings() {
   );
 }
 
-function Slider({
-  label,
-  min,
-  max,
-  step,
+// 单个参数行：左（标签 + 上下限提示） / 右（数字输入框）
+function ParamField({
+  spec,
   value,
   onChange
 }: {
-  label: string;
-  min: number;
-  max: number;
-  step: number;
+  spec: ParamSpec;
   value: number;
   onChange: (v: number) => void;
 }) {
+  // draft === null 表示「未在编辑」，显示值由 value 派生（切换预设时自动同步）
+  const [draft, setDraft] = useState<string | null>(null);
+  const display = draft ?? formatParam(spec.key, value);
+
+  const handleChange = (t: string) => {
+    setDraft(t);
+    // 中间态不提交：空串与单独的负号在输入过程中会频繁出现，提交会把光标打回去
+    if (t.trim() === '' || t.trim() === '-') return;
+    const n = Number(t);
+    // 编辑中不钳制（否则想把 -5 改成 -0.5 会被提前改写），仅提交可解析的数值
+    if (Number.isFinite(n)) onChange(n);
+  };
+
+  const commit = () => {
+    const t = (draft ?? '').trim();
+    // 失焦统一钳制：空值回退中性值，越界值收敛到上下限，并规范化小数位
+    onChange(clampParam(spec.key, t === '' ? NaN : Number(t)));
+    setDraft(null);
+  };
+
+  const draftNum = draft === null || draft.trim() === '' ? null : Number(draft);
+  const outOfRange =
+    draftNum !== null &&
+    Number.isFinite(draftNum) &&
+    (draftNum < spec.min || draftNum > spec.max);
+
   return (
-    <div>
-      <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 2 }}>{label}</div>
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'minmax(0,1fr) 88px',
+        gap: 8,
+        alignItems: 'center',
+        minWidth: 0
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0 }} title={spec.desc}>
+        <span style={{ fontSize: 13, color: 'var(--text)', whiteSpace: 'nowrap' }}>{spec.label}</span>
+        <span style={{ fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+          {paramRangeText(spec)}
+        </span>
+      </div>
       <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        style={{ width: '100%' }}
+        type="number"
+        inputMode="decimal"
+        min={spec.min}
+        max={spec.max}
+        step={spec.step}
+        value={display}
+        onChange={(e) => handleChange(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+        }}
+        aria-label={`${spec.label}（${paramRangeText(spec)}）`}
+        style={{
+          ...field,
+          padding: '4px 8px',
+          // 收紧行高：参数行是纯数字输入，不需要正文行高，压缩后 5 行共省下约 25px
+          lineHeight: 1.2,
+          minWidth: 0,
+          // 字号刻意不在此声明：移动端由 index.css 的全局媒体查询统一提升到 16px
+          // （防 iOS 聚焦自动缩放），桌面端沿用控件默认字号。避免两处事实来源。
+          borderColor: outOfRange ? WARN_COLOR : 'var(--border)'
+        }}
       />
     </div>
   );
 }
+
+const PREVIEW_BG = '#808080';
+const WARN_COLOR = '#c0392b';
+
+const labelText: React.CSSProperties = { fontSize: 12, color: 'var(--muted)' };
 
 const field: React.CSSProperties = {
   padding: '8px 10px',
   borderRadius: 'var(--radius)',
   border: '1px solid var(--border)',
   background: 'var(--surface)',
-  color: 'var(--text)'
+  color: 'var(--text)',
+  minWidth: 0
 };
 function btn(primary = false): React.CSSProperties {
   return {

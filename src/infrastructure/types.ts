@@ -21,13 +21,125 @@ export interface DeviceInfo {
   exifModel: string | null;
 }
 
+// 色彩矫正参数（上下限/步长/中性值见下方 PARAM_SPECS，勿在此处重复声明取值范围）
 export interface ColorProfile {
   deviceModel: string;
-  temperature: number; // 色温 K 偏移，如 -500..500
-  tint: number; // 色调 -100..100
-  saturation: number; // 0.5..1.5
-  contrast: number; // 0.5..1.5
+  temperature: number; // 色温 K 偏移
+  tint: number; // 色调偏移
+  exposure: number; // 曝光 EV
+  saturation: number; // 饱和度倍数
+  contrast: number; // 对比度倍数
   presetName: string;
+}
+
+// ===== 色彩参数定义表：单一事实来源 =====
+// 参数的上下限、步长、中性值、单位、语义只在此处定义。
+// 以下四处均从本表读取，新增参数只需在此追加一行：
+//   ① 设置页参数区渲染（数字输入框 + 区间提示）  ② 输入钳制与精度规范化
+//   ③ 旧数据迁移的逐字段回退值（normalizeProfile） ④ isIdentityProfile 的中性判定
+export type ColorParamKey = 'temperature' | 'tint' | 'exposure' | 'saturation' | 'contrast';
+
+export interface ParamSpec {
+  key: ColorParamKey;
+  label: string; // 展示名
+  min: number; // 下限（含）
+  max: number; // 上限（含）
+  step: number; // 输入步长
+  neutral: number; // 中性值：等于该值时不产生任何视觉效果
+  decimals: number; // 展示与规范化的小数位
+  unit: string; // 单位后缀（空字符串表示无单位）
+  desc: string; // 语义说明（UI 提示与文档共用）
+}
+
+export const PARAM_SPECS: readonly ParamSpec[] = [
+  {
+    key: 'temperature',
+    label: '色温',
+    min: -500,
+    max: 500,
+    step: 10,
+    neutral: 0,
+    decimals: 0,
+    unit: 'K',
+    desc: '冷暖偏移（当前经亮度通道近似实现）'
+  },
+  {
+    key: 'tint',
+    label: '色调',
+    min: -100,
+    max: 100,
+    step: 1,
+    neutral: 0,
+    decimals: 0,
+    unit: '',
+    desc: '绿—品红偏移（色相旋转）'
+  },
+  {
+    key: 'exposure',
+    label: '曝光',
+    min: -2,
+    max: 2,
+    step: 0.05,
+    neutral: 0,
+    decimals: 2,
+    unit: 'EV',
+    desc: '整体明暗，按 2 的 EV 次方换算为亮度增益'
+  },
+  {
+    key: 'saturation',
+    label: '饱和度',
+    min: 0.5,
+    max: 1.5,
+    step: 0.01,
+    neutral: 1,
+    decimals: 2,
+    unit: '',
+    desc: '颜色浓郁度'
+  },
+  {
+    key: 'contrast',
+    label: '对比度',
+    min: 0.5,
+    max: 1.5,
+    step: 0.01,
+    neutral: 1,
+    decimals: 2,
+    unit: '',
+    desc: '明暗反差'
+  }
+];
+
+export const COLOR_PARAM_KEYS: ColorParamKey[] = PARAM_SPECS.map((s) => s.key);
+
+export const PARAM_SPEC = Object.fromEntries(PARAM_SPECS.map((s) => [s.key, s])) as Record<
+  ColorParamKey,
+  ParamSpec
+>;
+
+// 参数中性值集合：既是色彩矫正的「零位」，也是缺失字段的迁移回退值
+export const NEUTRAL_COLOR_PARAMS = Object.fromEntries(
+  PARAM_SPECS.map((s) => [s.key, s.neutral])
+) as Record<ColorParamKey, number>;
+
+// 区间文案，如 "-500 ~ 500 K"（UI 与文档共用，避免两处各写一份）
+export function paramRangeText(spec: ParamSpec): string {
+  return `${spec.min} ~ ${spec.max}${spec.unit ? ` ${spec.unit}` : ''}`;
+}
+
+// 数值规范化：非有限值回退中性值 → 钳制到上下限 → 按小数位取整。
+// UI 失焦处理与数据迁移必须共用此函数，否则会出现「界面显示值 ≠ 实际烘焙值」。
+export function clampParam(key: ColorParamKey, value: number): number {
+  const spec = PARAM_SPEC[key];
+  const n = Number.isFinite(value) ? value : spec.neutral;
+  const clamped = Math.min(spec.max, Math.max(spec.min, n));
+  const p = 10 ** spec.decimals;
+  return Math.round(clamped * p) / p;
+}
+
+// 按定义表的小数位格式化，供输入框回显使用
+export function formatParam(key: ColorParamKey, value: number): string {
+  const v = clampParam(key, value);
+  return v.toFixed(PARAM_SPEC[key].decimals);
 }
 
 export interface CropMeta {

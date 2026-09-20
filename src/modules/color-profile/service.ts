@@ -1,30 +1,112 @@
-import type { ColorProfile } from '../../infrastructure/types';
+import type { ColorProfile, ColorParamKey } from '../../infrastructure/types';
+import { COLOR_PARAM_KEYS, clampParam } from '../../infrastructure/types';
 
 // 色彩矫正服务层：可配置「设备型号 → 参数」映射表（localStorage 持久化，非硬编码）
 // 仅依赖基础设施类型；映射表在设置中维护
 
 const STORE_KEY = 'tea-color-profiles';
 
+// 存储结构版本：v1 = 裸数组（无版本号）；v2 = { version, list } 信封。
+// 提升版本号的目的不是结构美观，而是让「读取时迁移」有据可依（见 normalizeProfile）。
+export const PROFILE_VERSION = 2;
+
+interface StoredEnvelope {
+  version: number;
+  list: ColorProfile[];
+}
+
 // 默认预设：含通配 '*' 作为未匹配时的回退；其余按设备型号匹配
 export const DEFAULT_PROFILES: ColorProfile[] = [
-  { deviceModel: '*', temperature: 0, tint: 0, saturation: 1, contrast: 1, presetName: '原图（默认）' },
-  { deviceModel: 'iPhone', temperature: 120, tint: 0, saturation: 1.05, contrast: 1.02, presetName: 'iPhone 暖调' },
-  { deviceModel: 'Xiaomi', temperature: -80, tint: 5, saturation: 1.1, contrast: 1.05, presetName: '小米 提饱和' }
+  {
+    deviceModel: '*',
+    temperature: 0,
+    tint: 0,
+    exposure: 0,
+    saturation: 1,
+    contrast: 1,
+    presetName: '原图（默认）'
+  },
+  {
+    deviceModel: 'iPhone',
+    temperature: 120,
+    tint: 0,
+    exposure: 0,
+    saturation: 1.05,
+    contrast: 1.02,
+    presetName: 'iPhone 暖调'
+  },
+  {
+    deviceModel: 'Xiaomi',
+    temperature: -80,
+    tint: 5,
+    exposure: 0,
+    saturation: 1.1,
+    contrast: 1.05,
+    presetName: '小米 提饱和'
+  }
 ];
+
+// 逐字段规范化：缺失/非法字段回退到参数定义表的中性值，并钳制到上下限。
+//
+// 为什么必须做（P0）：老版本数据没有 exposure 字段，若直接使用会让 filterString
+// 产出 brightness(NaN)。按 CSS filter 规范，只要列表中任一函数无效，整个 filter 值
+// 即被判定为无效并被浏览器静默丢弃 —— 结果是**既有的色温/色调/饱和度/对比度四项矫正
+// 同时失灵，且控制台无任何报错**。因此迁移必须在读取路径上强制执行。
+export function normalizeProfile(input: unknown): ColorProfile {
+  const raw = (input ?? {}) as Record<string, unknown>;
+  const readNum = (v: unknown): number =>
+    typeof v === 'number' && Number.isFinite(v) ? v : NaN;
+
+  const params = {} as Record<ColorParamKey, number>;
+  for (const key of COLOR_PARAM_KEYS) {
+    params[key] = clampParam(key, readNum(raw[key]));
+  }
+
+  return {
+    deviceModel: typeof raw.deviceModel === 'string' ? raw.deviceModel : '*',
+    presetName: typeof raw.presetName === 'string' ? raw.presetName : '未命名预设',
+    ...params
+  };
+}
+
+// 兼容两种存储形态，返回原始条目数组与「是否旧形态」标记；无法识别时返回 null
+function extractList(parsed: unknown): { list: unknown[]; legacy: boolean } | null {
+  if (Array.isArray(parsed)) return { list: parsed, legacy: true };
+  if (parsed && typeof parsed === 'object') {
+    const env = parsed as Partial<StoredEnvelope>;
+    if (Array.isArray(env.list)) {
+      return { list: env.list, legacy: env.version !== PROFILE_VERSION };
+    }
+  }
+  return null;
+}
 
 export function loadProfiles(): ColorProfile[] {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    if (raw) return JSON.parse(raw) as ColorProfile[];
+    if (!raw) return DEFAULT_PROFILES.map(normalizeProfile);
+
+    const parsed: unknown = JSON.parse(raw);
+    const found = extractList(parsed);
+    if (!found) return DEFAULT_PROFILES.map(normalizeProfile);
+
+    const list = found.list.map(normalizeProfile);
+    // 首次读到旧形态（裸数组或旧版本号）时立即回写新信封，使迁移只发生一次
+    if (found.legacy) saveProfiles(list);
+    return list;
   } catch {
-    /* 忽略读取异常 */
+    /* 读取异常（含 JSON 损坏）一律回退默认值，避免整页不可用 */
+    return DEFAULT_PROFILES.map(normalizeProfile);
   }
-  return DEFAULT_PROFILES;
 }
 
 export function saveProfiles(list: ColorProfile[]): void {
   try {
-    localStorage.setItem(STORE_KEY, JSON.stringify(list));
+    const envelope: StoredEnvelope = {
+      version: PROFILE_VERSION,
+      list: list.map(normalizeProfile)
+    };
+    localStorage.setItem(STORE_KEY, JSON.stringify(envelope));
   } catch {
     /* 忽略写入异常 */
   }
@@ -40,11 +122,29 @@ export function getProfile(deviceModel: string | null): ColorProfile | null {
   return list.find((p) => p.deviceModel === '*') ?? null;
 }
 
-// 转为 CSS filter 字符串（用于实时预览）
+// 转为 CSS filter 字符串（设置页实时预览与烘焙共用，是唯一渲染出口）
+//
+// 亮度通道由两个参数共同决定，请注意二者并非正交：
+//   色温：±500K 映射为 ±50% 亮度偏移（近似实现，非真实色温/白平衡）
+//   曝光：EV 按 2^EV 换算为线性亮度增益
+// 即 +500K 与 +0.5EV 在视觉上都表现为「整体变亮」。真正的通道级色温
+// （R×kr / B×kb 增益矩阵）需逐像素处理，属后续可选项，不在本轮范围。
 export function filterString(p: ColorProfile): string {
-  const brightness = (100 + p.temperature / 10) / 100;
-  const hue = p.tint * 0.4;
-  return `contrast(${p.contrast}) saturate(${p.saturation}) brightness(${brightness}) hue-rotate(${hue}deg)`;
+  const temperature = clampParam('temperature', p?.temperature);
+  const exposure = clampParam('exposure', p?.exposure);
+  const tint = clampParam('tint', p?.tint);
+
+  const tempLift = (100 + temperature / 10) / 100;
+  const expoGain = 2 ** exposure;
+  // 防御性钳制：实际可达区间为 [0.125, 6.0]，此处仅保证永不为 0 或负
+  const brightness = Math.min(8, Math.max(0.01, tempLift * expoGain));
+  const brightnessText = String(Math.round(brightness * 10000) / 10000);
+  const hue = tint * 0.4;
+
+  return `contrast(${clampParam('contrast', p?.contrast)}) saturate(${clampParam(
+    'saturation',
+    p?.saturation
+  )}) brightness(${brightnessText}) hue-rotate(${hue}deg)`;
 }
 
 // 将色彩矫正烘焙到新 canvas（保留原图，结果另存）
