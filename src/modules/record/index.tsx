@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { Sample, QualityDimension } from '../../infrastructure/types';
-import { DIMENSION_LABEL } from '../../infrastructure/types';
+import type { Sample, SlotKey } from '../../infrastructure/types';
+import { SLOT_KEYS, SLOT_LABEL } from '../../infrastructure/types';
 import { repositories } from '../../infrastructure/repository';
 import { bus } from '../../infrastructure/event-bus';
 import { useMediaQuery, formatTimestamp, downloadBlob } from '../../infrastructure/utils';
@@ -18,7 +18,8 @@ import {
 import { SampleThumb } from './components/SampleThumb';
 
 // 数据记录与导出页（路由 /record）
-const DIMS: QualityDimension[] = ['shape', 'soup', 'leaf'];
+// 槽位（外形 / 茶汤第1冲 / 茶汤第2冲 / 叶底）由 infrastructure/types 的定义表驱动，
+// 本页不含槽位硬编码；每个槽位可独立重编辑 / 重传。
 
 export function RecordPage() {
   const navigate = useNavigate();
@@ -65,8 +66,9 @@ export function RecordPage() {
     await refresh();
   };
 
-  const handleReupload = async (sample: Sample, dim: QualityDimension, blob: Blob) => {
-    await reuploadAsset(sample, dim, blob);
+  // 重传按槽位独立：茶汤第1冲与第2冲互不影响
+  const handleReupload = async (sample: Sample, slot: SlotKey, blob: Blob) => {
+    await reuploadAsset(sample, slot, blob);
     await refresh();
   };
 
@@ -120,7 +122,7 @@ export function RecordPage() {
   if (!samples.length) {
     return (
       <div className="surface" style={{ padding: 16, color: 'var(--muted)' }}>
-        暂无已登记样品。请先在「登记」完成标签与三图采集并确认登记。
+        暂无已登记样品。请先在「登记」完成标签与图像采集并确认登记。
       </div>
     );
   }
@@ -175,7 +177,7 @@ export function RecordPage() {
             <thead>
               <tr style={{ color: 'var(--muted)', textAlign: 'left' }}>
                 <th style={th}>选</th>
-                <th style={th}>三图</th>
+                <th style={th}>图像</th>
                 <th style={th}>标签</th>
                 <th style={th}>自由编号</th>
                 <th style={th}>标准文件名（示例）</th>
@@ -194,8 +196,8 @@ export function RecordPage() {
                     </td>
                     <td style={td}>
                       <div style={{ display: 'flex', gap: 6 }}>
-                        {DIMS.map((d) => (
-                          <SampleThumb key={d} asset={s.images[d]} size={48} />
+                        {SLOT_KEYS.map((k) => (
+                          <SampleThumb key={k} asset={s.images[k]} size={48} />
                         ))}
                       </div>
                     </td>
@@ -215,46 +217,23 @@ export function RecordPage() {
                       />
                     </td>
                     <td style={td}>
-                      <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-                        {DIMS.map((d) => (
-                          <div key={d}>
-                            {DIMENSION_LABEL[d]}：{fileNameFor(s, d, fc || sampleFreeCode(s))}
-                            {s.images[d]?.editedFile ? '' : '（未编辑）'}
-                          </div>
-                        ))}
-                      </div>
+                      <FilenamePreview sample={s} freeCode={fc || sampleFreeCode(s)} />
                     </td>
                     <td style={td}>{s.deviceInfo.model ?? '—'}</td>
                     <td style={td}>{formatTimestamp(s.createdAt)}</td>
                     <td style={td}>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                         <button onClick={() => navigate(`/label/${s.id}`)} style={btn(false)}>
                           编辑标签
                         </button>
-                        {DIMS.map((d) =>
-                          s.images[d] ? (
-                            <button
-                              key={d}
-                              onClick={() => navigate(`/edit/${s.images[d]!.id}`)}
-                              style={btn(false)}
-                            >
-                              重编辑{DIMENSION_LABEL[d]}
-                            </button>
-                          ) : null
-                        )}
-                        <label style={btn(false)}>
-                          重传
-                          <input
-                            type="file"
-                            accept="image/*"
-                            style={{ display: 'none' }}
-                            onChange={(e) => {
-                              const f = e.target.files?.[0];
-                              if (f) handleReupload(s, 'shape', f);
-                              e.target.value = '';
-                            }}
-                          />
-                        </label>
+                        <SlotActionList
+                          sample={s}
+                          onEdit={(slot) => {
+                            const a = s.images[slot];
+                            if (a) navigate(`/edit/${a.id}`);
+                          }}
+                          onReupload={(slot, blob) => handleReupload(s, slot, blob)}
+                        />
                         <button onClick={() => handleDelete(s.id)} style={btn(false)}>
                           删除
                         </button>
@@ -279,48 +258,43 @@ export function RecordPage() {
                     {s.category} / {s.year} / {s.grade}
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: 10 }}>
-                  {DIMS.map((d) => (
-                    <div key={d} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-                      <SampleThumb asset={s.images[d]} size={72} />
-                      <span style={{ fontSize: 11, color: 'var(--muted)' }}>{DIMENSION_LABEL[d]}</span>
-                      {s.images[d] && (
-                        <button onClick={() => navigate(`/edit/${s.images[d]!.id}`)} style={btn(false)}>
-                          重编辑
-                        </button>
-                      )}
+
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {SLOT_KEYS.map((k) => (
+                    <div key={k} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, width: 68 }}>
+                      <SampleThumb asset={s.images[k]} size={64} />
+                      <span style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center', lineHeight: 1.2 }}>
+                        {SLOT_LABEL[k]}
+                      </span>
                     </div>
                   ))}
                 </div>
+
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ fontSize: 13, color: 'var(--muted)' }}>自由编号</span>
                   <input
                     value={fc}
                     onChange={(e) => setDrafts((p) => ({ ...p, [s.id]: e.target.value }))}
                     onBlur={() => commitFreeCode(s)}
-                    style={{ flex: 1, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
+                    style={{ flex: 1, minWidth: 0, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
                   />
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-                  {fileNameFor(s, 'shape', fc || sampleFreeCode(s))}
-                </div>
+
+                <FilenamePreview sample={s} freeCode={fc || sampleFreeCode(s)} />
+
+                <SlotActionList
+                  sample={s}
+                  onEdit={(slot) => {
+                    const a = s.images[slot];
+                    if (a) navigate(`/edit/${a.id}`);
+                  }}
+                  onReupload={(slot, blob) => handleReupload(s, slot, blob)}
+                />
+
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button onClick={() => navigate(`/label/${s.id}`)} style={btn(false)}>
                     编辑标签
                   </button>
-                  <label style={btn(false)}>
-                    重传
-                    <input
-                      type="file"
-                      accept="image/*"
-                      style={{ display: 'none' }}
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f) handleReupload(s, 'shape', f);
-                        e.target.value = '';
-                      }}
-                    />
-                  </label>
                   <button onClick={() => handleDelete(s.id)} style={btn(false)}>
                     删除
                   </button>
@@ -330,6 +304,77 @@ export function RecordPage() {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+// 标准文件名预览：逐一列出槽位（未采集 / 未编辑也会显式标注，避免误以为已就绪）
+function FilenamePreview({ sample, freeCode }: { sample: Sample; freeCode: string }) {
+  return (
+    <div style={{ fontSize: 12, color: 'var(--muted)' }}>
+      {SLOT_KEYS.map((k) => {
+        const a = sample.images[k];
+        return (
+          <div key={k} style={{ whiteSpace: 'nowrap' }}>
+            {SLOT_LABEL[k]}：{a ? fileNameFor(sample, k, freeCode) : '—'}
+            {a && !a.editedFile ? '（未编辑）' : ''}
+            {!a ? '（未采集）' : ''}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// 按槽位独立的操作列表：每个已采集槽位一行「槽位名 + 重编辑 + 重传」
+// 修复既有缺陷：原先重传按钮硬编码 'shape'，只能重传外形。
+function SlotActionList({
+  sample,
+  onEdit,
+  onReupload
+}: {
+  sample: Sample;
+  onEdit: (slot: SlotKey) => void;
+  onReupload: (slot: SlotKey, blob: Blob) => void;
+}) {
+  const rows = SLOT_KEYS.filter((k) => sample.images[k]);
+  if (!rows.length) return null;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      {rows.map((k) => (
+        <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span
+            style={{
+              fontSize: 11,
+              color: 'var(--muted)',
+              width: 64,
+              flexShrink: 0,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap'
+            }}
+            title={SLOT_LABEL[k]}
+          >
+            {SLOT_LABEL[k]}
+          </span>
+          <button onClick={() => onEdit(k)} style={btn(false)}>
+            重编辑
+          </button>
+          <label style={btn(false)}>
+            重传
+            <input
+              type="file"
+              accept="image/*"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) onReupload(k, f);
+                e.target.value = '';
+              }}
+            />
+          </label>
+        </div>
+      ))}
     </div>
   );
 }

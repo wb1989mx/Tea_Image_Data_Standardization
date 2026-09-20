@@ -1,35 +1,39 @@
-import type { ImageAsset, QualityDimension } from '../../../infrastructure/types';
-import { DIMENSION_LABEL } from '../../../infrastructure/types';
+import type { ImageAsset } from '../../../infrastructure/types';
 import { useObjectURL } from '../../../infrastructure/utils';
 
-// 单个质量维度槽位卡片（外形/茶汤/叶底复用）
-// 纯展示 + 事件回调，不读写其它模块内部状态
+// 单个采集槽位卡片（外形 / 茶汤第1冲 / 茶汤第2冲 / 叶底 复用）
+// 纯展示 + 事件回调：展示名与说明由外部按槽位定义表传入，卡片自身不认识槽位语义，
+// 因此后续增删槽位无需改动本组件。
 interface Props {
-  dimension: QualityDimension;
+  label: string; // 槽位展示名，如「茶汤第2冲」
+  hint: string; // 拍摄/取材说明
+  required: boolean; // 必填槽位；选填槽位在未采集时显示「选填」而非「未采集」
   asset: ImageAsset | null;
   onCapture: () => void;
   onUpload: (blob: Blob) => void;
   onEdit: () => void;
 }
 
-export function SlotCard({ dimension, asset, onCapture, onUpload, onEdit }: Props) {
+export function SlotCard({ label, hint, required, asset, onCapture, onUpload, onEdit }: Props) {
   const thumb = useObjectURL(asset?.editedFile ?? asset?.originalFile);
   const confirmed = Boolean(asset?.editedFile);
+  const badge = confirmed ? '已确认' : asset ? '待编辑' : required ? '未采集' : '选填';
 
   return (
     <div className="surface" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ fontWeight: 600 }}>{DIMENSION_LABEL[dimension]}</div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+        <div style={{ fontWeight: 600 }}>{label}</div>
         <div
           style={{
             fontSize: 12,
             padding: '2px 8px',
             borderRadius: 999,
+            whiteSpace: 'nowrap',
             color: confirmed ? '#fff' : 'var(--muted)',
             background: confirmed ? 'var(--primary)' : 'var(--border)'
           }}
         >
-          {confirmed ? '已确认' : asset ? '待编辑' : '未采集'}
+          {badge}
         </div>
       </div>
 
@@ -43,13 +47,19 @@ export function SlotCard({ dimension, asset, onCapture, onUpload, onEdit }: Prop
           alignItems: 'center',
           justifyContent: 'center',
           overflow: 'hidden',
-          border: '1px dashed var(--border)'
+          border: '1px dashed var(--border)',
+          padding: 10,
+          textAlign: 'center'
         }}
       >
         {thumb ? (
-          <img src={thumb} alt={dimension} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          <img src={thumb} alt={label} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
         ) : (
-          <span style={{ color: 'var(--muted)', fontSize: 13 }}>暂无图像</span>
+          <span style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.5 }}>
+            暂无图像
+            <br />
+            {hint}
+          </span>
         )}
       </div>
 
@@ -58,7 +68,8 @@ export function SlotCard({ dimension, asset, onCapture, onUpload, onEdit }: Prop
           onClick={onCapture}
           style={{
             flex: 1,
-            padding: '10px',
+            minWidth: 0,
+            padding: '10px 4px',
             borderRadius: 'var(--radius)',
             border: '1px solid var(--primary)',
             background: 'var(--primary)',
@@ -70,8 +81,9 @@ export function SlotCard({ dimension, asset, onCapture, onUpload, onEdit }: Prop
         <label
           style={{
             flex: 1,
+            minWidth: 0,
             textAlign: 'center',
-            padding: '10px',
+            padding: '10px 4px',
             borderRadius: 'var(--radius)',
             border: '1px solid var(--border)',
             background: 'var(--surface)',
@@ -96,7 +108,8 @@ export function SlotCard({ dimension, asset, onCapture, onUpload, onEdit }: Prop
             onClick={onEdit}
             style={{
               flex: 1,
-              padding: '10px',
+              minWidth: 0,
+              padding: '10px 4px',
               borderRadius: 'var(--radius)',
               border: '1px solid var(--border)',
               background: 'var(--surface)',

@@ -1,4 +1,5 @@
 import type { Sample, DeviceInfo } from '../../infrastructure/types';
+import { emptySlotMap } from '../../infrastructure/types';
 import { uid } from '../../infrastructure/utils';
 import { repositories } from '../../infrastructure/repository';
 
@@ -24,7 +25,7 @@ export async function createDraft(deviceInfo: DeviceInfo): Promise<Sample> {
     grade: '',
     deviceInfo,
     colorProfile: null,
-    images: { shape: null, soup: null, leaf: null },
+    images: emptySlotMap(),
     status: 'incomplete',
     createdAt: now,
     updatedAt: now
@@ -50,7 +51,8 @@ export async function saveLabel(sampleId: string, input: LabelInput): Promise<Sa
     grade: input.grade.trim(),
     deviceInfo: input.deviceInfo,
     colorProfile: existing?.colorProfile ?? null,
-    images: existing?.images ?? { shape: null, soup: null, leaf: null },
+    // 与空槽位表合并，确保老草稿（迁移前创建、可能缺 soup2 键）补齐全部槽位键
+    images: existing?.images ? { ...emptySlotMap(), ...existing.images } : emptySlotMap(),
     status: 'pending',
     createdAt: existing?.createdAt ?? now,
     updatedAt: now

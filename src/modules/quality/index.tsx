@@ -1,22 +1,30 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import type { Sample, QualityDimension } from '../../infrastructure/types';
+import type { Sample, SlotKey } from '../../infrastructure/types';
+import { DIMENSIONS, SLOTS_OF } from '../../infrastructure/types';
 import { repositories } from '../../infrastructure/repository';
 import { bus } from '../../infrastructure/event-bus';
 import { getCameraCapture } from '../../infrastructure/capabilities';
-import { ensureAsset, isRegistrationReady, confirmRegistration } from './service';
+import {
+  ensureAsset,
+  isRegistrationReady,
+  missingRequiredSlots,
+  confirmRegistration
+} from './service';
 import { SlotCard } from './components/SlotCard';
+import { SlotGroup } from './components/SlotGroup';
 
 // 质量维度采集页（路由 /quality/:sampleId）
-// 三槽位（外形/茶汤/叶底）；相机经 capabilities 注册表获取，绝不 import camera 模块
-const DIMENSIONS: QualityDimension[] = ['shape', 'soup', 'leaf'];
+// 采集槽位由 infrastructure/types 的 SLOTS 定义表驱动（外形 / 茶汤第1冲 / 茶汤第2冲 / 叶底），
+// 本页只负责按维度分组渲染，不含任何槽位硬编码；增删槽位只改定义表。
+// 相机经 capabilities 注册表获取，绝不 import camera 模块。
 
 export function QualityPage() {
   const { sampleId } = useParams();
   const navigate = useNavigate();
   const [sample, setSample] = useState<Sample | null>(null);
   const [error, setError] = useState('');
-  const [captureFor, setCaptureFor] = useState<QualityDimension | null>(null);
+  const [captureFor, setCaptureFor] = useState<SlotKey | null>(null);
 
   const CameraCapture = getCameraCapture();
 
@@ -36,25 +44,31 @@ export function QualityPage() {
     };
   }, [sampleId]);
 
-  const handleCaptured = async (dim: QualityDimension, blob: Blob) => {
+  const handleCaptured = async (slot: SlotKey, blob: Blob) => {
     if (!sampleId) return;
-    await ensureAsset(sampleId, dim, blob);
+    await ensureAsset(sampleId, slot, blob);
     const s = await repositories.sample.get(sampleId);
     if (s) setSample(s);
     setCaptureFor(null);
   };
 
-  const handleUpload = async (dim: QualityDimension, blob: Blob) => {
+  const handleUpload = async (slot: SlotKey, blob: Blob) => {
     if (!sampleId) return;
-    await ensureAsset(sampleId, dim, blob);
+    await ensureAsset(sampleId, slot, blob);
     const s = await repositories.sample.get(sampleId);
     if (s) setSample(s);
   };
 
   const handleConfirm = async () => {
     if (!sampleId || !sample) return;
+    const missing = missingRequiredSlots(sample);
     if (!isRegistrationReady(sample)) {
-      setError('需完整填写标签，且外形/茶汤/叶底三图均完成编辑确认');
+      // 缺什么就说什么：提示里带上具体槽位名，避免"去猜还差哪张"
+      setError(
+        missing.length
+          ? `以下必填槽位尚未完成采集与编辑确认：${missing.join('、')}`
+          : '需完整填写标签（类别 / 名称 / 年份 / 等级）'
+      );
       return;
     }
     setError('');
@@ -62,8 +76,8 @@ export function QualityPage() {
     navigate('/record');
   };
 
-  const onSlotCapture = (dim: QualityDimension) => {
-    if (CameraCapture) setCaptureFor(dim);
+  const onSlotCapture = (slot: SlotKey) => {
+    if (CameraCapture) setCaptureFor(slot);
     else setError('当前环境不支持相机采集，请使用「上传」');
   };
 
@@ -87,17 +101,30 @@ export function QualityPage() {
         <div style={{ fontSize: 13, color: 'var(--muted)' }}>{sample.category} / {sample.grade}</div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {DIMENSIONS.map((dim) => (
-          <SlotCard
-            key={dim}
-            dimension={dim}
-            asset={sample.images[dim]}
-            onCapture={() => onSlotCapture(dim)}
-            onUpload={(b) => handleUpload(dim, b)}
-            onEdit={() => sample.images[dim] && navigate(`/edit/${sample.images[dim]!.id}`)}
-          />
-        ))}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        {DIMENSIONS.map((dim) => {
+          const slots = SLOTS_OF(dim);
+          return (
+            // span = 该维度下的槽位数：茶汤含 2 个槽位 → 跨 2 列，组内并排
+            <SlotGroup key={dim} span={slots.length}>
+              {slots.map((s) => (
+                <SlotCard
+                  key={s.key}
+                  label={s.label}
+                  hint={s.hint}
+                  required={s.required}
+                  asset={sample.images[s.key]}
+                  onCapture={() => onSlotCapture(s.key)}
+                  onUpload={(b) => handleUpload(s.key, b)}
+                  onEdit={() => {
+                    const a = sample.images[s.key];
+                    if (a) navigate(`/edit/${a.id}`);
+                  }}
+                />
+              ))}
+            </SlotGroup>
+          );
+        })}
       </div>
 
       {error && <div style={{ color: '#c0392b', fontSize: 13 }}>{error}</div>}

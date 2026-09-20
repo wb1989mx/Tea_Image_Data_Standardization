@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import ReactCrop, { type Crop, type PercentCrop } from 'react-image-crop';
 import 'react-image-crop/dist/ReactCrop.css';
 import type { ImageAsset, OutputFormat, BackgroundMode, CropMeta, ColorProfile } from '../../infrastructure/types';
+import { SLOT_LABEL, slotOf } from '../../infrastructure/types';
 import { repositories } from '../../infrastructure/repository';
 import { getColorProfileLookup } from '../../infrastructure/capabilities';
 import {
@@ -161,7 +162,8 @@ export function ImageEditorPage() {
         className="surface"
         style={{ padding: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
       >
-        <div style={{ fontWeight: 600 }}>图像编辑 · {asset.dimension}</div>
+        {/* 显示中文槽位名（如「茶汤第1冲」）：两张茶汤图编辑时才分得清在改哪张 */}
+        <div style={{ fontWeight: 600 }}>图像编辑 · {SLOT_LABEL[slotOf(asset)]}</div>
         <button
           onClick={handleCancel}
           disabled={saving}

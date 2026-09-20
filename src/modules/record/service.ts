@@ -1,21 +1,25 @@
-import type { Sample, QualityDimension } from '../../infrastructure/types';
-import { DIMENSION_LABEL } from '../../infrastructure/types';
+import type { Sample, SlotKey } from '../../infrastructure/types';
+import { SLOT_KEYS, SLOT_LABEL } from '../../infrastructure/types';
 import { repositories } from '../../infrastructure/repository';
 import { bus } from '../../infrastructure/event-bus';
 
-// 记录服务层：重命名规则、自由编号自动递增、冲突检测、批量重命名、删除
-// 仅依赖 infrastructure（repository / event-bus）
+// 记录服务层：重命名规则、自由编号自动递增、冲突检测、批量重命名、删除、重传
+// 仅依赖 infrastructure（repository / event-bus / types 定义表）
+// 注意：循环一律走 SLOT_KEYS（槽位），不再用三图维度数组 —— 茶汤有 2 个槽位。
 
-const DIMS: QualityDimension[] = ['shape', 'soup', 'leaf'];
-
-// 样品级自由编号（三图共享，取首个非空）
+// 样品级自由编号（各槽位共享，取首个非空）
 export function sampleFreeCode(s: Sample): string {
-  return s.images.shape?.freeCode || s.images.soup?.freeCode || s.images.leaf?.freeCode || '';
+  for (const k of SLOT_KEYS) {
+    const fc = s.images[k]?.freeCode;
+    if (fc) return fc;
+  }
+  return '';
 }
 
-// 标准文件名规则：名称 + 年份 + 等级 + 质量维度 + 自由编号
-export function fileNameFor(s: Sample, dim: QualityDimension, freeCode: string): string {
-  return `${s.name}_${s.year}_${s.grade}_${DIMENSION_LABEL[dim]}_${freeCode}`;
+// 标准文件名规则：名称 + 年份 + 等级 + 槽位名 + 自由编号
+// 例：清香铁观音_2026_三级_茶汤第1冲_001
+export function fileNameFor(s: Sample, slot: SlotKey, freeCode: string): string {
+  return `${s.name}_${s.year}_${s.grade}_${SLOT_LABEL[slot]}_${freeCode}`;
 }
 
 function comboKey(s: Sample): string {
@@ -42,14 +46,14 @@ export function hasConflict(samples: Sample[], target: Sample, freeCode: string)
   );
 }
 
-// 应用自由编号：写入样品三图资产并生成标准文件名，持久化
+// 应用自由编号：写入样品全部槽位资产并生成标准文件名，持久化
 export async function applyFreeCode(sample: Sample, freeCode: string): Promise<Sample> {
   const now = Date.now();
-  for (const dim of DIMS) {
-    const a = sample.images[dim];
+  for (const slot of SLOT_KEYS) {
+    const a = sample.images[slot];
     if (a) {
       a.freeCode = freeCode;
-      a.fileName = fileNameFor(sample, dim, freeCode);
+      a.fileName = fileNameFor(sample, slot, freeCode);
       a.updatedAt = now;
       await repositories.asset.put(a);
     }
@@ -83,10 +87,11 @@ export async function bulkAutoRename(samples: Sample[], selectedIds: string[]): 
   }
 }
 
-// 替换某维度原图（重传）：保留资产，清空编辑结果，需重新编辑
-export async function reuploadAsset(sample: Sample, dim: QualityDimension, blob: Blob): Promise<Sample> {
-  const a = sample.images[dim];
-  if (!a) return sample;
+// 替换某槽位原图（重传）：保留资产记录，清空编辑结果，需重新编辑。
+// 入参为 slot：茶汤第 1 冲（soup）与第 2 冲（soup2）互不影响。
+export async function reuploadAsset(sample: Sample, slot: SlotKey, blob: Blob): Promise<Sample> {
+  const a = sample.images[slot];
+  if (!a) return sample; // 该槽位尚未采集：请到采集页新增，避免在此处隐式创建资产
   a.originalFile = blob;
   a.editedFile = null;
   a.cropMeta = null;
@@ -96,4 +101,9 @@ export async function reuploadAsset(sample: Sample, dim: QualityDimension, blob:
   await repositories.sample.update(sample);
   bus.emit('sample:changed');
   return sample;
+}
+
+// 遍历样品全部槽位的资产（记录页缩略图/文件名预览用）
+export function slotAssets(s: Sample): { slot: SlotKey; asset: Sample['images'][SlotKey] }[] {
+  return SLOT_KEYS.map((slot) => ({ slot, asset: s.images[slot] }));
 }
