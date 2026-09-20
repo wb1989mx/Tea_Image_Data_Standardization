@@ -1,5 +1,5 @@
 import type { ColorProfile, ColorParamKey } from '../../infrastructure/types';
-import { COLOR_PARAM_KEYS, clampParam, WILDCARD_MODEL } from '../../infrastructure/types';
+import { COLOR_PARAM_KEYS, clampParam, isWildcardModel, WILDCARD_MODEL } from '../../infrastructure/types';
 
 // 色彩矫正服务层：可配置「设备型号 → 参数」映射表（localStorage 持久化，非硬编码）
 // 仅依赖基础设施类型；映射表在设置中维护
@@ -102,7 +102,7 @@ const WILDCARD_PROFILE: ColorProfile =
 // 补齐缺失的通配项：只追加、不删除也不重排，保证用户既有条目原样保留。
 // 追加到末尾而非首位 —— 不打乱用户已保存的顺序，也避免设置页默认选中项被换掉。
 function ensureWildcard(list: ColorProfile[]): { list: ColorProfile[]; patched: boolean } {
-  if (list.some((p) => p.deviceModel === WILDCARD_MODEL)) return { list, patched: false };
+  if (list.some((p) => isWildcardModel(p.deviceModel))) return { list, patched: false };
   return { list: [...list, normalizeProfile(WILDCARD_PROFILE)], patched: true };
 }
 
@@ -139,18 +139,40 @@ export function saveProfiles(list: ColorProfile[]): void {
   }
 }
 
-// 按设备型号取参数：精确匹配 → 通配项 → null。
+// 匹配结果：exact = 命中具体机型；wildcard = 退到通配项兜底；none = 连通配项都没有。
+// 区分三态是必要的 —— 「用了我的预设」与「退回了通配原图」在编辑页看起来都是
+// "有预设可用"，若不区分，用户会以为自己的预设没生效却无从判断。
+export type ProfileMatchKind = 'exact' | 'wildcard' | 'none';
+
+export interface ProfileMatch {
+  kind: ProfileMatchKind;
+  profile: ColorProfile | null;
+}
+
+// 匹配序的唯一实现：精确机型 → 通配项 → 未命中。
+//
+// 之所以把 list 作为入参而不是内部 loadProfiles()，是因为设置页的「命中自检」
+// 需要按**编辑中**的列表实时预览命中结果（用户改完还没保存就该看到变化）。
+// 编辑页仍走 getProfile（读已保存的列表）。两条路径共用这一份判断，杜绝分叉。
+//
+// 机型两侧都先 trim 再比较：机型是自由输入字段，首尾空白不该影响命中。
+export function matchProfile(list: ColorProfile[], deviceModel: string | null): ProfileMatch {
+  const model = (deviceModel ?? '').trim();
+  if (model) {
+    const hit = list.find((p) => p.deviceModel.trim() === model);
+    if (hit) return { kind: 'exact', profile: hit };
+  }
+  const fallback = list.find((p) => isWildcardModel(p.deviceModel)) ?? null;
+  return fallback ? { kind: 'wildcard', profile: fallback } : { kind: 'none', profile: null };
+}
+
+// 按设备型号取参数（读已保存的映射表）。
 //
 // 由于 loadProfiles 保证列表中始终存在通配项，实际只剩「列表被外部写坏」一种
 // null 可能，返回值仍保留 null 以便调用方（quality 的元数据写入）保持原有的
 // 「未匹配则不记录预设」语义，不把兜底值当成用户配置写进样品。
 export function getProfile(deviceModel: string | null): ColorProfile | null {
-  const list = loadProfiles();
-  if (deviceModel) {
-    const hit = list.find((p) => p.deviceModel === deviceModel);
-    if (hit) return hit;
-  }
-  return list.find((p) => p.deviceModel === WILDCARD_MODEL) ?? null;
+  return matchProfile(loadProfiles(), deviceModel).profile;
 }
 
 // 转为 CSS filter 字符串（设置页实时预览与烘焙共用，是唯一渲染出口）

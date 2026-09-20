@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import ReactCrop, { type Crop, type PercentCrop } from 'react-image-crop';
 import 'react-image-crop/dist/ReactCrop.css';
 import type { ImageAsset, OutputFormat, BackgroundMode, CropMeta, ColorProfile } from '../../infrastructure/types';
-import { SLOT_LABEL, WILDCARD_MODEL, slotOf } from '../../infrastructure/types';
+import { SLOT_LABEL, isWildcardModel, slotOf } from '../../infrastructure/types';
 import { repositories } from '../../infrastructure/repository';
 import { getColorProfileLookup } from '../../infrastructure/capabilities';
 import {
@@ -15,6 +15,9 @@ import {
   type PixelRect
 } from './service';
 import { EditorControls } from './components/EditorControls';
+
+// 通配回退属于「能用但不精确」的提示，用琥珀色区别于错误红
+const HIT_NOTE_COLOR = '#b26a00';
 
 // 图像编辑页（独立路由 /edit/:assetId）
 // 圆形裁剪 + 缩放/旋转 + 输出尺寸/格式/底色 + 色彩矫正；确认回写并广播，取消不保存
@@ -72,6 +75,34 @@ export function ImageEditorPage() {
       if (url) URL.revokeObjectURL(url);
     };
   }, [assetId]);
+
+  // 命中类型：区分「精确命中机型」与「回退通配项」。
+  // 在此之前二者在界面上都只表现为"有预设可用"，于是"我的预设没生效"这件事
+  // 只能靠用户自己拿设置页的机型去比对才能发现 —— 这里把它显式讲出来。
+  const colorHit: 'exact' | 'wildcard' | 'none' = !profile
+    ? 'none'
+    : isWildcardModel(profile.deviceModel)
+      ? 'wildcard'
+      : 'exact';
+
+  // 两处兜底分支共用的出口按钮
+  const gotoColorSettings = (
+    <button
+      onClick={() => navigate('/settings')}
+      style={{
+        alignSelf: 'flex-start',
+        padding: '6px 12px',
+        borderRadius: 'var(--radius)',
+        border: '1px solid var(--border)',
+        background: 'var(--surface)',
+        color: 'var(--text)',
+        cursor: 'pointer',
+        fontSize: 13
+      }}
+    >
+      前往「设置 → 色彩映射表」维护
+    </button>
+  );
 
   const currentPercent = (): PercentCrop => completedCrop ?? DEFAULT_PERCENT;
 
@@ -227,8 +258,19 @@ export function ImageEditorPage() {
                 <div style={{ fontSize: 13, color: 'var(--muted)' }}>
                   {applyColor ? `已应用预设：${profile.presetName}` : '未应用（原图输出）'}
                 </div>
-                {profile.deviceModel !== WILDCARD_MODEL && (
+                {colorHit === 'exact' ? (
                   <div style={{ fontSize: 12, color: 'var(--muted)' }}>匹配机型：{profile.deviceModel}</div>
+                ) : (
+                  // 通配回退：明确告知"没匹配上"，否则用户会以为自己的预设已生效
+                  <>
+                    <div style={{ fontSize: 12, color: HIT_NOTE_COLOR }}>
+                      样品机型「{sampleModel || '未记录'}」未命中具体预设，已回退通配项
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+                      如需精确匹配：在「设置 → 色彩映射表」为上述机型增补一条预设
+                    </div>
+                    {gotoColorSettings}
+                  </>
                 )}
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
                   <input
@@ -248,21 +290,7 @@ export function ImageEditorPage() {
                 <div style={{ fontSize: 12, color: 'var(--muted)' }}>
                   样品机型：{sampleModel || '未记录'}；映射表中补一条同型号条目或通配项即可命中
                 </div>
-                <button
-                  onClick={() => navigate('/settings')}
-                  style={{
-                    alignSelf: 'flex-start',
-                    padding: '6px 12px',
-                    borderRadius: 'var(--radius)',
-                    border: '1px solid var(--border)',
-                    background: 'var(--surface)',
-                    color: 'var(--text)',
-                    cursor: 'pointer',
-                    fontSize: 13
-                  }}
-                >
-                  前往「设置 → 色彩映射表」维护
-                </button>
+                {gotoColorSettings}
               </>
             )}
           </div>

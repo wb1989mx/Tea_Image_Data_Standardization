@@ -37,6 +37,13 @@ export interface ColorProfile {
 // 其它模块需要判断"是否走了兜底"时应引用本常量，不要写字面量 '*'。
 export const WILDCARD_MODEL = '*';
 
+// 判断某条预设是否为通配项。
+// 比较前统一 trim：机型字段是自由输入，从设备信息处复制粘贴常带首尾空白，
+// 而"看起来一样却匹配不上"正是最难自查的一类错误。
+export function isWildcardModel(model: string | null | undefined): boolean {
+  return (model ?? '').trim() === WILDCARD_MODEL;
+}
+
 // ===== 色彩参数定义表：单一事实来源 =====
 // 参数的上下限、步长、中性值、单位、语义只在此处定义。
 // 以下四处均从本表读取，新增参数只需在此追加一行：

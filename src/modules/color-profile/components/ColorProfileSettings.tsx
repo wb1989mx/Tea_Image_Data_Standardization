@@ -3,13 +3,14 @@ import type { ColorProfile, ColorParamKey, ParamSpec } from '../../../infrastruc
 import {
   PARAM_SPECS,
   NEUTRAL_COLOR_PARAMS,
-  WILDCARD_MODEL,
   clampParam,
   formatParam,
+  isWildcardModel,
   paramRangeText
 } from '../../../infrastructure/types';
 import { useMediaQuery } from '../../../infrastructure/utils';
-import { loadProfiles, saveProfiles, filterString, DEFAULT_PROFILES } from '../service';
+import { useRootStore } from '../../../infrastructure/store';
+import { loadProfiles, saveProfiles, filterString, matchProfile, DEFAULT_PROFILES } from '../service';
 
 // 色彩映射表维护（设置页使用）：可增删改预设，并上传样图实时预览
 //
@@ -36,12 +37,34 @@ export function ColorProfileSettings() {
   // 「按住看原图」：按下期间临时移除 filter，便于判断校准幅度
   const [showOriginal, setShowOriginal] = useState(false);
 
+  // 当前设备型号：与「设备信息」卡片同源（全局 root store）。
+  // 注意这只是"本机当前型号"，而编辑页匹配的是**样品创建时的机型快照**，
+  // 两者可能不同 —— 自检必须把这个区别讲出来，否则用户会拿错参照物。
+  const deviceModel = useRootStore((s) => s.deviceInfo.model ?? '');
+  const deviceTrim = deviceModel.trim();
+
   const current = profiles[active] ?? DEFAULT_PROFILES[0];
 
   // 通配项是「未匹配机型」的唯一兜底出口，删除它会让编辑页对未匹配机型彻底失去预设。
   // 读取路径虽会自动补回（ensureWildcard），但"删了又回来"本身就是困惑源，故在源头禁止。
-  const isWildcardRow = current.deviceModel === WILDCARD_MODEL;
-  const hasWildcard = profiles.some((p) => p.deviceModel === WILDCARD_MODEL);
+  const isWildcardRow = isWildcardModel(current.deviceModel);
+  const hasWildcard = profiles.some((p) => isWildcardModel(p.deviceModel));
+
+  // 命中自检按**编辑中**的列表实时计算：改完型号还没保存就该看到命中结果变化。
+  // 这正是之前缺失的一环 —— 用户填了「2026」而设备是「专业相机（2026）」时，
+  // 全流程没有任何一处会提示"你这条预设匹配不上任何设备"。
+  const hit = matchProfile(profiles, deviceTrim);
+  const usedProfile = hit.profile;
+  const usedIndex = usedProfile ? profiles.indexOf(usedProfile) : -1;
+  const hitColor =
+    hit.kind === 'exact' ? 'var(--primary)' : hit.kind === 'wildcard' ? NOTE_COLOR : WARN_COLOR;
+  const hitText = !usedProfile
+    ? '无可用预设（映射表缺少通配项）'
+    : hit.kind === 'exact'
+      ? `${usedProfile.presetName}（精确匹配机型「${usedProfile.deviceModel}」）`
+      : !deviceTrim
+        ? `${usedProfile.presetName}（设备型号为空，回退通配项）`
+        : `${usedProfile.presetName}（未命中具体机型，回退通配项）`;
 
   const update = (patch: Partial<ColorProfile>) => {
     setProfiles((prev) => prev.map((p, i) => (i === active ? { ...p, ...patch } : p)));
@@ -71,13 +94,13 @@ export function ColorProfileSettings() {
   const remove = (i: number) => {
     const target = profiles[i];
     // 双重保险：按钮已 disable，此处再挡一次，防止键盘/程序路径绕过
-    if (!target || target.deviceModel === WILDCARD_MODEL) return;
+    if (!target || isWildcardModel(target.deviceModel)) return;
     setProfiles((prev) => prev.filter((_, idx) => idx !== i));
     setActive(0);
     setSaved(false);
   };
 
-  // ---- 参数列（预设名称 / 设备匹配 / 参数数字输入） ----
+  // ---- 参数列（预设名称 / 设备匹配 / 参数数字输入 / 命中自检） ----
   const paramsCol = (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
       {/* 预设名称与设备型号并排一行，压缩竖向空间 */}
@@ -97,6 +120,23 @@ export function ColorProfileSettings() {
             onChange={(e) => update({ deviceModel: e.target.value })}
             style={field}
           />
+          {/* 一键填入：把全局设备型号原样写进来，消除手输错字与全角/半角括号差异。
+              这两类错字在界面上看不出来（下拉框会把名称与型号拼成「专业相机（2026）」），
+              却是"预设不生效"最常见的成因。 */}
+          <button
+            type="button"
+            disabled={!deviceTrim || current.deviceModel.trim() === deviceTrim}
+            onClick={() => update({ deviceModel: deviceTrim })}
+            title={deviceTrim ? `填入「${deviceTrim}」` : '设备信息中尚未填写型号'}
+            style={{
+              ...linkBtn,
+              alignSelf: 'flex-end',
+              opacity: !deviceTrim || current.deviceModel.trim() === deviceTrim ? 0.4 : 1,
+              cursor: !deviceTrim || current.deviceModel.trim() === deviceTrim ? 'default' : 'pointer'
+            }}
+          >
+            填入当前设备型号
+          </button>
         </div>
       </div>
 
@@ -109,6 +149,62 @@ export function ColorProfileSettings() {
             onChange={(v) => updateParam(spec.key, v)}
           />
         ))}
+      </div>
+
+      {/* 命中自检：把「哪条预设会被当前设备用到」摊开在设置页。
+          在此之前这条信息只存在于编辑页 —— 用户必须先去撞一次
+          「已应用预设：原图（默认）」才发现自己填的型号没匹配上。 */}
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 4,
+          paddingTop: 8,
+          borderTop: '1px solid var(--border)'
+        }}
+      >
+        <span style={labelText}>命中自检</span>
+        <div style={{ fontSize: 12, color: 'var(--text)' }}>
+          当前设备型号：{deviceTrim || '（未填写）'}
+        </div>
+        <div style={{ fontSize: 12, color: hitColor }}>将使用：{hitText}</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2 }}>
+          {profiles.map((p, i) => {
+            const wc = isWildcardModel(p.deviceModel);
+            const exact = deviceTrim !== '' && p.deviceModel.trim() === deviceTrim;
+            const isUsed = i === usedIndex;
+            return (
+              <div
+                key={i}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                  fontSize: 12,
+                  color: isUsed ? (exact ? 'var(--primary)' : NOTE_COLOR) : 'var(--muted)'
+                }}
+              >
+                <span
+                  style={{
+                    minWidth: 0,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  {isUsed ? '✓' : '✗'} {p.deviceModel.trim() || '（未填）'} → {p.presetName}
+                </span>
+                <span style={{ whiteSpace: 'nowrap' }}>
+                  {exact ? '精确命中' : wc ? '通配兜底' : '未命中'}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
+          注：编辑页匹配的是「样品创建时记录的机型」，不是本页的全局型号；老样品若机型不同，
+          仍需按该样品的实际机型增补预设。
+        </div>
       </div>
     </div>
   );
@@ -185,7 +281,7 @@ export function ColorProfileSettings() {
         >
           {profiles.map((p, i) => (
             <option key={i} value={i}>
-              {p.presetName}（{p.deviceModel}）
+              {p.deviceModel.trim() || '（未填）'} → {p.presetName}
             </option>
           ))}
         </select>
@@ -326,6 +422,19 @@ function ParamField({
 
 const PREVIEW_BG = '#808080';
 const WARN_COLOR = '#c0392b';
+// 通配兜底属于「能用但不精确」，用琥珀色区别于错误红与正常主色
+const NOTE_COLOR = '#b26a00';
+
+// 文字按钮：用于「填入当前设备型号」这类不必占据按钮位的轻量动作
+const linkBtn: React.CSSProperties = {
+  padding: 0,
+  border: 'none',
+  background: 'transparent',
+  color: 'var(--primary)',
+  fontSize: 12,
+  lineHeight: 1.2,
+  cursor: 'pointer'
+};
 
 const labelText: React.CSSProperties = { fontSize: 12, color: 'var(--muted)' };
 
