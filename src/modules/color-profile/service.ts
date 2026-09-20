@@ -1,5 +1,5 @@
 import type { ColorProfile, ColorParamKey } from '../../infrastructure/types';
-import { COLOR_PARAM_KEYS, clampParam } from '../../infrastructure/types';
+import { COLOR_PARAM_KEYS, clampParam, WILDCARD_MODEL } from '../../infrastructure/types';
 
 // 色彩矫正服务层：可配置「设备型号 → 参数」映射表（localStorage 持久化，非硬编码）
 // 仅依赖基础设施类型；映射表在设置中维护
@@ -15,10 +15,10 @@ interface StoredEnvelope {
   list: ColorProfile[];
 }
 
-// 默认预设：含通配 '*' 作为未匹配时的回退；其余按设备型号匹配
+// 默认预设：含通配项（WILDCARD_MODEL）作为未匹配时的回退；其余按设备型号匹配
 export const DEFAULT_PROFILES: ColorProfile[] = [
   {
-    deviceModel: '*',
+    deviceModel: WILDCARD_MODEL,
     temperature: 0,
     tint: 0,
     exposure: 0,
@@ -63,7 +63,7 @@ export function normalizeProfile(input: unknown): ColorProfile {
   }
 
   return {
-    deviceModel: typeof raw.deviceModel === 'string' ? raw.deviceModel : '*',
+    deviceModel: typeof raw.deviceModel === 'string' ? raw.deviceModel : WILDCARD_MODEL,
     presetName: typeof raw.presetName === 'string' ? raw.presetName : '未命名预设',
     ...params
   };
@@ -81,18 +81,45 @@ function extractList(parsed: unknown): { list: unknown[]; legacy: boolean } | nu
   return null;
 }
 
+// 通配预设：所有「未匹配到具体机型」的样品都走它，是色彩矫正的兜底出口。
+//
+// 它是**系统保证项**，不是普通数据行，理由是删掉它的后果不可自洽：
+// 所有未匹配机型将落入「无预设」状态 —— 编辑页只剩一行提示、连「应用色彩矫正」
+// 开关都不渲染，用户在该页无法自救，只能反直觉地猜到要去另一页补一行通配。
+// 因此读取路径负责保证其存在（见 ensureWildcard），设置页也不允许删除它。
+const WILDCARD_PROFILE: ColorProfile =
+  DEFAULT_PROFILES.find((p) => p.deviceModel === WILDCARD_MODEL) ??
+  ({
+    deviceModel: WILDCARD_MODEL,
+    temperature: 0,
+    tint: 0,
+    exposure: 0,
+    saturation: 1,
+    contrast: 1,
+    presetName: '原图（默认）'
+  } as ColorProfile);
+
+// 补齐缺失的通配项：只追加、不删除也不重排，保证用户既有条目原样保留。
+// 追加到末尾而非首位 —— 不打乱用户已保存的顺序，也避免设置页默认选中项被换掉。
+function ensureWildcard(list: ColorProfile[]): { list: ColorProfile[]; patched: boolean } {
+  if (list.some((p) => p.deviceModel === WILDCARD_MODEL)) return { list, patched: false };
+  return { list: [...list, normalizeProfile(WILDCARD_PROFILE)], patched: true };
+}
+
 export function loadProfiles(): ColorProfile[] {
   try {
     const raw = localStorage.getItem(STORE_KEY);
+    // 从未配置过：返回默认表（含通配）。刻意不写盘，让「未配置」与「已保存」保持可区分
     if (!raw) return DEFAULT_PROFILES.map(normalizeProfile);
 
     const parsed: unknown = JSON.parse(raw);
     const found = extractList(parsed);
     if (!found) return DEFAULT_PROFILES.map(normalizeProfile);
 
-    const list = found.list.map(normalizeProfile);
-    // 首次读到旧形态（裸数组或旧版本号）时立即回写新信封，使迁移只发生一次
-    if (found.legacy) saveProfiles(list);
+    const normalized = found.list.map(normalizeProfile);
+    const { list, patched } = ensureWildcard(normalized);
+    // 旧形态、或本轮补齐过通配项时回写，使迁移与自愈各自只发生一次
+    if (found.legacy || patched) saveProfiles(list);
     return list;
   } catch {
     /* 读取异常（含 JSON 损坏）一律回退默认值，避免整页不可用 */
@@ -112,14 +139,18 @@ export function saveProfiles(list: ColorProfile[]): void {
   }
 }
 
-// 按设备型号取参数；未命中则回退通配预设；都不存在返回 null
+// 按设备型号取参数：精确匹配 → 通配项 → null。
+//
+// 由于 loadProfiles 保证列表中始终存在通配项，实际只剩「列表被外部写坏」一种
+// null 可能，返回值仍保留 null 以便调用方（quality 的元数据写入）保持原有的
+// 「未匹配则不记录预设」语义，不把兜底值当成用户配置写进样品。
 export function getProfile(deviceModel: string | null): ColorProfile | null {
   const list = loadProfiles();
   if (deviceModel) {
     const hit = list.find((p) => p.deviceModel === deviceModel);
     if (hit) return hit;
   }
-  return list.find((p) => p.deviceModel === '*') ?? null;
+  return list.find((p) => p.deviceModel === WILDCARD_MODEL) ?? null;
 }
 
 // 转为 CSS filter 字符串（设置页实时预览与烘焙共用，是唯一渲染出口）

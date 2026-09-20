@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import ReactCrop, { type Crop, type PercentCrop } from 'react-image-crop';
 import 'react-image-crop/dist/ReactCrop.css';
 import type { ImageAsset, OutputFormat, BackgroundMode, CropMeta, ColorProfile } from '../../infrastructure/types';
-import { SLOT_LABEL, slotOf } from '../../infrastructure/types';
+import { SLOT_LABEL, WILDCARD_MODEL, slotOf } from '../../infrastructure/types';
 import { repositories } from '../../infrastructure/repository';
 import { getColorProfileLookup } from '../../infrastructure/capabilities';
 import {
@@ -40,6 +40,8 @@ export function ImageEditorPage() {
   // 色彩矫正：按样品设备型号解析的预设 + 是否应用
   const [profile, setProfile] = useState<ColorProfile | null>(null);
   const [applyColor, setApplyColor] = useState(false);
+  // 样品记录的机型：兜底分支要把"为什么没匹配上"讲清楚，就得把机型回显出来
+  const [sampleModel, setSampleModel] = useState<string | null>(null);
 
   // 保存反馈：saving 防重复提交，saved 给出成功反馈后再返回，error 就地提示失败原因
   const [saving, setSaving] = useState(false);
@@ -60,6 +62,7 @@ export function ImageEditorPage() {
       setImgSrc(url);
       const sample = await repositories.sample.get(a.sampleId);
       const model = sample?.deviceInfo.model ?? null;
+      setSampleModel(model);
       const lookup = getColorProfileLookup();
       const p = lookup ? lookup(model) : null;
       setProfile(p);
@@ -224,7 +227,7 @@ export function ImageEditorPage() {
                 <div style={{ fontSize: 13, color: 'var(--muted)' }}>
                   {applyColor ? `已应用预设：${profile.presetName}` : '未应用（原图输出）'}
                 </div>
-                {profile.deviceModel !== '*' && (
+                {profile.deviceModel !== WILDCARD_MODEL && (
                   <div style={{ fontSize: 12, color: 'var(--muted)' }}>匹配机型：{profile.deviceModel}</div>
                 )}
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
@@ -237,9 +240,30 @@ export function ImageEditorPage() {
                 </label>
               </>
             ) : (
-              <div style={{ fontSize: 13, color: 'var(--muted)' }}>
-                未找到色彩预设（可在「设置 → 色彩映射表」维护设备→参数）
-              </div>
+              // 兜底分支：正常情况下不会走到这里 —— color-profile 的读取路径保证映射表中
+              // 始终存在通配项。仅当色彩模块未注册（lookup 为空）时才可达。
+              // 因此这里不能只丢一句提示：要说明机型、给出下一步动作，让用户能走出去。
+              <>
+                <div style={{ fontSize: 13, color: 'var(--muted)' }}>当前样品未匹配到色彩预设</div>
+                <div style={{ fontSize: 12, color: 'var(--muted)' }}>
+                  样品机型：{sampleModel || '未记录'}；映射表中补一条同型号条目或通配项即可命中
+                </div>
+                <button
+                  onClick={() => navigate('/settings')}
+                  style={{
+                    alignSelf: 'flex-start',
+                    padding: '6px 12px',
+                    borderRadius: 'var(--radius)',
+                    border: '1px solid var(--border)',
+                    background: 'var(--surface)',
+                    color: 'var(--text)',
+                    cursor: 'pointer',
+                    fontSize: 13
+                  }}
+                >
+                  前往「设置 → 色彩映射表」维护
+                </button>
+              </>
             )}
           </div>
         </div>

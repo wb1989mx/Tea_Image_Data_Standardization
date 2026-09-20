@@ -3,6 +3,7 @@ import type { ColorProfile, ColorParamKey, ParamSpec } from '../../../infrastruc
 import {
   PARAM_SPECS,
   NEUTRAL_COLOR_PARAMS,
+  WILDCARD_MODEL,
   clampParam,
   formatParam,
   paramRangeText
@@ -37,6 +38,11 @@ export function ColorProfileSettings() {
 
   const current = profiles[active] ?? DEFAULT_PROFILES[0];
 
+  // 通配项是「未匹配机型」的唯一兜底出口，删除它会让编辑页对未匹配机型彻底失去预设。
+  // 读取路径虽会自动补回（ensureWildcard），但"删了又回来"本身就是困惑源，故在源头禁止。
+  const isWildcardRow = current.deviceModel === WILDCARD_MODEL;
+  const hasWildcard = profiles.some((p) => p.deviceModel === WILDCARD_MODEL);
+
   const update = (patch: Partial<ColorProfile>) => {
     setProfiles((prev) => prev.map((p, i) => (i === active ? { ...p, ...patch } : p)));
     setSaved(false);
@@ -63,6 +69,9 @@ export function ColorProfileSettings() {
   };
 
   const remove = (i: number) => {
+    const target = profiles[i];
+    // 双重保险：按钮已 disable，此处再挡一次，防止键盘/程序路径绕过
+    if (!target || target.deviceModel === WILDCARD_MODEL) return;
     setProfiles((prev) => prev.filter((_, idx) => idx !== i));
     setActive(0);
     setSaved(false);
@@ -183,13 +192,30 @@ export function ColorProfileSettings() {
         <button onClick={addNew} style={btn()}>
           新增预设
         </button>
-        <button onClick={() => remove(active)} style={btn()}>
+        <button
+          onClick={() => remove(active)}
+          disabled={isWildcardRow}
+          title={isWildcardRow ? '通配项是未匹配机型的兜底出口，不可删除' : '删除当前预设'}
+          style={{
+            ...btn(),
+            opacity: isWildcardRow ? 0.45 : 1,
+            cursor: isWildcardRow ? 'not-allowed' : 'pointer'
+          }}
+        >
           删除
         </button>
         <button onClick={persist} style={btnPrimary}>
           保存映射表
         </button>
         {saved && <span style={{ color: 'var(--primary)', fontSize: 13 }}>已保存</span>}
+      </div>
+
+      {/* 映射表状态常驻可见：通配项缺失是「编辑页找不到预设」的唯一成因，
+          把它摆在设置页，用户自检时不必先撞上一次无解的错误提示。 */}
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12, color: 'var(--muted)' }}>
+        <span>映射表共 {profiles.length} 条</span>
+        <span>{hasWildcard ? '通配项已配置（未匹配机型走它）' : '通配项缺失（读取时会自动补齐）'}</span>
+        {isWildcardRow && <span style={{ color: 'var(--text)' }}>当前选中为通配项，不可删除</span>}
       </div>
 
       {/* 列序：桌面端 左参数→右预览；移动端 预览→参数（首屏即可见样图） */}
