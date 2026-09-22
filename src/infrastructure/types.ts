@@ -154,6 +154,66 @@ export function formatParam(key: ColorParamKey, value: number): string {
   return v.toFixed(PARAM_SPEC[key].decimals);
 }
 
+// ===== 裁剪形状定义表：单一事实来源 =====
+// 「形状」是**输出蒙版属性**，与裁剪几何（位置 / 大小 / 缩放 / 旋转）正交 ——
+// 因此切换形状无需对裁剪框做任何换算，也不会丢失已完成的编辑。
+// 新增形状只需在本表追加一行：分段控件、蒙版绘制、预览与缩略图轮廓、导出列名自动跟随。
+export type CropShape = 'square' | 'circle';
+
+export interface CropShapeDef {
+  key: CropShape;
+  label: string; // 展示名
+  hint: string; // 语义说明（UI 提示与文档共用）
+  masked: boolean; // true = 按圆形蒙版裁切（四角透明）；false = 整幅方形输出
+}
+
+export const CROP_SHAPES: readonly CropShapeDef[] = [
+  {
+    key: 'circle',
+    label: '圆形',
+    hint: '四角透明（alpha=0），聚焦干茶 / 茶汤 / 叶底主体',
+    masked: true
+  },
+  {
+    key: 'square',
+    label: '正方形',
+    hint: '整幅 1:1 像素，四角同属图像，便于全域取色与测量',
+    masked: false
+  }
+];
+
+// 默认形状取圆形：历史产出全部是圆形，取与历史一致的默认值可避免静默改变既有行为。
+export const DEFAULT_CROP_SHAPE: CropShape = 'circle';
+
+export const CROP_SHAPE_DEF = Object.fromEntries(
+  CROP_SHAPES.map((s) => [s.key, s])
+) as Record<CropShape, CropShapeDef>;
+
+export const CROP_SHAPE_LABEL = Object.fromEntries(
+  CROP_SHAPES.map((s) => [s.key, s.label])
+) as Record<CropShape, string>;
+
+// 预览 / 缩略图的轮廓半径：仅影响显示，不改动文件本身。
+// 圆形需正圆，方形用圆角矩形——否则方形产物在缩略图里被 CSS 二次裁成圆，
+// 用户会误判「正方形模式没生效」。
+export function cropShapeRadius(shape: CropShape): string {
+  return CROP_SHAPE_DEF[shape].masked ? '50%' : 'var(--radius)';
+}
+
+// 让裁片在画布内旋转后仍能覆盖四角所需的最小缩放倍数。
+//
+// 推导：边长为 S 的正方形绕中心旋转 θ 后，要覆盖同尺寸的轴对齐正方形，
+// 需要其边长 L ≥ S·(|cosθ| + |sinθ|)；而绘制时 L = S × scale，
+// 故 scale ≥ |cosθ| + |sinθ|（θ=0 时为 1，θ=45° 时为 √2 ≈ 1.4142）。
+//
+// 为什么需要它：这是「正方形 + 旋转」会露出底色的**充要**条件。若只判断「旋转≠0」，
+// 在用户已把缩放调到足够大时仍会误报，提示就变成了噪音。
+export function cropCoverScale(shape: CropShape, rotationDeg: number): number {
+  if (CROP_SHAPE_DEF[shape].masked) return 1; // 圆形：内切圆恒被覆盖，与旋转无关
+  const rad = (rotationDeg * Math.PI) / 180;
+  return Math.abs(Math.cos(rad)) + Math.abs(Math.sin(rad));
+}
+
 export interface CropMeta {
   x: number;
   y: number;
@@ -164,6 +224,15 @@ export interface CropMeta {
   outputSize: number; // 如 1024
   outputFormat: OutputFormat;
   background: BackgroundMode;
+  // 输出蒙版形状。声明为可选以兼容历史记录（兜底语义见 cropShapeOf）。
+  shape?: CropShape;
+}
+
+// 读取裁剪形状：历史 CropMeta 没有 shape 字段，而历史产出全部为圆形，
+// 故兜底 'circle' 语义正确 —— 与 slotOf() 属同一「读取时兜底」范式，
+// 从而无需升级 Dexie 版本即可向后兼容。
+export function cropShapeOf(cropMeta: CropMeta | null | undefined): CropShape {
+  return cropMeta?.shape ?? DEFAULT_CROP_SHAPE;
 }
 
 export interface ImageAsset {

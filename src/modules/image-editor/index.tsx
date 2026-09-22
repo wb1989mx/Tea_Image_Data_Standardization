@@ -2,13 +2,28 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import ReactCrop, { type Crop, type PercentCrop } from 'react-image-crop';
 import 'react-image-crop/dist/ReactCrop.css';
-import type { ImageAsset, OutputFormat, BackgroundMode, CropMeta, ColorProfile } from '../../infrastructure/types';
-import { SLOT_LABEL, isWildcardModel, slotOf } from '../../infrastructure/types';
+import type {
+  ImageAsset,
+  OutputFormat,
+  BackgroundMode,
+  CropShape,
+  CropMeta,
+  ColorProfile
+} from '../../infrastructure/types';
+import {
+  SLOT_LABEL,
+  CROP_SHAPE_DEF,
+  DEFAULT_CROP_SHAPE,
+  cropShapeOf,
+  cropShapeRadius,
+  isWildcardModel,
+  slotOf
+} from '../../infrastructure/types';
 import { repositories } from '../../infrastructure/repository';
 import { getColorProfileLookup } from '../../infrastructure/capabilities';
 import {
-  renderCircleCrop,
-  drawCircleCrop,
+  renderCrop,
+  drawCrop,
   saveEditedAsset,
   isIdentityProfile,
   type EditParams,
@@ -39,6 +54,8 @@ export function ImageEditorPage() {
   const [outputSize, setOutputSize] = useState(1024);
   const [outputFormat, setOutputFormat] = useState<OutputFormat>('png');
   const [background, setBackground] = useState<BackgroundMode>('transparent');
+  // 裁剪模式：方形 / 圆形。与裁剪几何（位置/缩放/旋转）正交，故切换时无需重置任何几何状态。
+  const [cropShape, setCropShape] = useState<CropShape>(DEFAULT_CROP_SHAPE);
 
   // 色彩矫正：按样品设备型号解析的预设 + 是否应用
   const [profile, setProfile] = useState<ColorProfile | null>(null);
@@ -63,6 +80,10 @@ export function ImageEditorPage() {
       setAsset(a);
       url = URL.createObjectURL(a.originalFile);
       setImgSrc(url);
+      // 恢复该资产已保存的裁剪形状：否则重新编辑一张方形产出时会默认回到圆形，
+      // 用户只点一次「确认」就把产物静默改回圆形 —— 这类不可见的状态翻转必须避免。
+      // 历史资产无 shape 字段，cropShapeOf 兜底为圆形，与既有产出形态一致。
+      setCropShape(cropShapeOf(a.cropMeta));
       const sample = await repositories.sample.get(a.sampleId);
       const model = sample?.deviceInfo.model ?? null;
       setSampleModel(model);
@@ -121,9 +142,9 @@ export function ImageEditorPage() {
       width: c.width * sx,
       height: c.height * sy
     };
-    const params: EditParams = { outputSize: PREVIEW, outputFormat, background };
-    drawCircleCrop(canvas, img, cropPx, params, rotation, scale, applyColor ? profile : null);
-  }, [crop, completedCrop, scale, rotation, outputFormat, background, imgReady, applyColor, profile]);
+    const params: EditParams = { outputSize: PREVIEW, outputFormat, background, shape: cropShape };
+    drawCrop(canvas, img, cropPx, params, rotation, scale, applyColor ? profile : null);
+  }, [crop, completedCrop, scale, rotation, outputFormat, background, cropShape, imgReady, applyColor, profile]);
 
   const handleConfirm = async () => {
     if (saving || saved) return;
@@ -148,9 +169,9 @@ export function ImageEditorPage() {
         width: c.width * sx,
         height: c.height * sy
       };
-      const params: EditParams = { outputSize, outputFormat, background };
+      const params: EditParams = { outputSize, outputFormat, background, shape: cropShape };
       const activeProfile = applyColor ? profile : null;
-      const blob = await renderCircleCrop(img, cropPx, params, rotation, scale, activeProfile);
+      const blob = await renderCrop(img, cropPx, params, rotation, scale, activeProfile);
       if (!blob || blob.size === 0) throw new Error('生成图像为空，请调整裁剪区域后重试');
       const cropMeta: CropMeta = {
         x: cropPx.x,
@@ -161,7 +182,9 @@ export function ImageEditorPage() {
         rotation,
         outputSize,
         outputFormat,
-        background
+        background,
+        // 记录产物的实际蒙版形状：缩略图呈现与导出元数据都依赖它
+        shape: cropShape
       };
       // 记录实际烘焙进 editedFile 的色彩参数（null=未应用），供记录/导出元数据使用
       asset.colorProfile = activeProfile;
@@ -220,7 +243,9 @@ export function ImageEditorPage() {
             onChange={(c) => setCrop(c)}
             onComplete={(_, percentCrop) => setCompletedCrop(percentCrop)}
             aspect={1}
-            circularCrop
+            // 叠加层形状跟随定义表：圆形模式叠加圆形遮罩，方形模式为直角手柄。
+            // aspect 恒为 1，故切换形状不改变选区几何 —— 这正是「切换零损失」的前提。
+            circularCrop={CROP_SHAPE_DEF[cropShape].masked}
             keepSelection
           >
             <img
@@ -240,11 +265,13 @@ export function ImageEditorPage() {
       >
         <div style={{ flex: 1, minWidth: 240, display: 'flex', flexDirection: 'column', gap: 16 }}>
           <EditorControls
+            cropShape={cropShape}
             scale={scale}
             rotation={rotation}
             outputSize={outputSize}
             outputFormat={outputFormat}
             background={background}
+            onCropShape={setCropShape}
             onScale={setScale}
             onRotate={setRotation}
             onOutputSize={setOutputSize}
@@ -301,7 +328,12 @@ export function ImageEditorPage() {
             ref={previewRef}
             width={PREVIEW}
             height={PREVIEW}
-            style={{ borderRadius: '50%', border: '1px solid var(--border)', background: 'var(--bg)' }}
+            // 轮廓跟随裁剪形状，让「当前是哪一档」在预览处即可辨认
+            style={{
+              borderRadius: cropShapeRadius(cropShape),
+              border: '1px solid var(--border)',
+              background: 'var(--bg)'
+            }}
           />
         </div>
       </div>

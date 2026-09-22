@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
 import type { Sample, SlotKey } from '../../infrastructure/types';
-import { SLOT_KEYS, SLOT_LABEL } from '../../infrastructure/types';
+import { CROP_SHAPE_LABEL, SLOT_KEYS, SLOT_LABEL, cropShapeOf } from '../../infrastructure/types';
 import { downloadBlob } from '../../infrastructure/utils';
 
 // 导出服务层：将若干样品打包为 ZIP（纯前端，无网络依赖）
@@ -55,6 +55,15 @@ export async function packZip(samples: Sample[]): Promise<Blob> {
     for (const slot of SLOT_KEYS) {
       row[`${SLOT_LABEL[slot]}文件`] = s.images[slot]?.fileName ?? '';
     }
+    // 裁剪形状列紧随文件列，便于下游按形状分流统计：
+    // 圆形产物的四角为 alpha=0，不应参与全域色值 / 明度统计。
+    // 未编辑的槽位留空值，保持列结构一致。
+    for (const slot of SLOT_KEYS) {
+      const a = s.images[slot];
+      row[`${SLOT_LABEL[slot]}裁剪形状`] = a?.editedFile
+        ? CROP_SHAPE_LABEL[cropShapeOf(a.cropMeta)]
+        : '';
+    }
     row.设备型号 = s.deviceInfo.model ?? '';
     row.色彩矫正 = s.colorProfile?.presetName ?? '';
     row.登记时间 = new Date(s.createdAt).toLocaleString();
@@ -71,6 +80,14 @@ export async function packZip(samples: Sample[]): Promise<Blob> {
       colorProfile: s.colorProfile,
       // 键为槽位键：shape / soup / soup2 / leaf
       files: Object.fromEntries(SLOT_KEYS.map((k) => [k, s.images[k]?.fileName ?? ''])),
+      // 新增字段（不改动既有键的顺序与语义）：各槽位产物的裁剪形状。
+      // 取机器键 square / circle；未编辑的槽位为空串。
+      cropShapes: Object.fromEntries(
+        SLOT_KEYS.map((k) => {
+          const a = s.images[k];
+          return [k, a?.editedFile ? cropShapeOf(a.cropMeta) : ''];
+        })
+      ),
       createdAt: s.createdAt,
       updatedAt: s.updatedAt
     });
@@ -89,6 +106,8 @@ export async function packZip(samples: Sample[]): Promise<Blob> {
     `样品数量：${samples.length}\n` +
     `生成时间：${new Date().toLocaleString()}\n` +
     `采集槽位：${SLOT_KEYS.map((k) => SLOT_LABEL[k]).join(' / ')}\n` +
+    `裁剪形状：各槽位记录于 metadata.csv 的「<槽位>裁剪形状」列与 metadata.json 的 cropShapes\n` +
+    `          （圆形产出的四角为 alpha=0，作全域色值/明度统计前请先排除）\n` +
     `目录结构：images/ 标准图、metadata.csv、metadata.json、manifest.txt\n\n` +
     samples
       .map((s, i) => `${i + 1}. ${s.name}_${s.year}_${s.grade}（编号 ${freeCodeOf(s)}）`)

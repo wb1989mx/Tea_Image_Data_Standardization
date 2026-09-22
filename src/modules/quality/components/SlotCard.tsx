@@ -1,4 +1,5 @@
 import type { ImageAsset } from '../../../infrastructure/types';
+import { cropShapeOf, cropShapeRadius } from '../../../infrastructure/types';
 import { useObjectURL } from '../../../infrastructure/utils';
 
 // 单个采集槽位卡片（外形 / 茶汤第1冲 / 茶汤第2冲 / 叶底 复用）
@@ -41,7 +42,8 @@ export function SlotCard({ label, hint, required, asset, onCapture, onUpload, on
         style={{
           width: '100%',
           aspectRatio: '1 / 1',
-          borderRadius: 'var(--radius)',
+          // 轮廓跟随产物裁剪形状：圆形产出的四角本就透明，用方形框会露出底色断层
+          borderRadius: cropShapeRadius(cropShapeOf(asset?.cropMeta)),
           background: 'var(--bg)',
           display: 'flex',
           alignItems: 'center',

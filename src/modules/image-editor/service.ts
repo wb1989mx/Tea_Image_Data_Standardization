@@ -1,16 +1,26 @@
-import type { ImageAsset, CropMeta, OutputFormat, BackgroundMode, ColorProfile } from '../../infrastructure/types';
-import { COLOR_PARAM_KEYS, NEUTRAL_COLOR_PARAMS } from '../../infrastructure/types';
+import type {
+  ImageAsset,
+  CropMeta,
+  CropShape,
+  OutputFormat,
+  BackgroundMode,
+  ColorProfile
+} from '../../infrastructure/types';
+import { COLOR_PARAM_KEYS, CROP_SHAPE_DEF, NEUTRAL_COLOR_PARAMS } from '../../infrastructure/types';
 import { repositories } from '../../infrastructure/repository';
 import { bus } from '../../infrastructure/event-bus';
 import { getColorBake } from '../../infrastructure/capabilities';
 
-// 图像编辑服务层：圆形裁剪渲染 + 色彩烘焙 + 保存回写
+// 图像编辑服务层：裁剪渲染（方形/圆形）+ 色彩烘焙 + 保存回写
 // 仅依赖 infrastructure（repository / event-bus / capabilities），不触碰其它业务模块
 
 export interface EditParams {
   outputSize: number; // 如 1024
   outputFormat: OutputFormat; // png | webp
   background: BackgroundMode; // transparent | white
+  // 输出蒙版形状。与 background 同属「图像之外那部分怎么处理」，故并入本条参数。
+  // 由定义表决定是否裁圆，新增形状无需改动本文件的绘制分支。
+  shape: CropShape;
 }
 
 export interface PixelRect {
@@ -46,9 +56,18 @@ export function isIdentityProfile(p: ColorProfile | null): boolean {
   });
 }
 
-// 将裁剪框（自然像素）+ 旋转 + 缩放绘制到一个给定尺寸的 canvas（圆形蒙版）
+// 将裁剪框（自然像素）+ 旋转 + 缩放绘制到一个给定尺寸的 canvas
+// 蒙版形状由 params.shape 经定义表决定：masked=true 走圆形裁切，false 走整幅方形。
 // 若传入 profile（且非中性），在绘制后按色彩预设烘焙（原图不动，仅作用于输出）
-export function drawCircleCrop(
+//
+// 形状切换为什么不需要换算裁剪框：裁剪框恒为 aspect=1 的正方形百分比选区，
+// 两种形状用的是同一个选区，区别只在于「选区内的哪些像素被保留」。
+//
+// 关于旋转的一个已知边界（不擅自替用户抹平）：
+//   旋转后的正方形无法覆盖画布四角，故「正方形 + 旋转≠0」会在四角露出底色（透明或白）；
+//   圆形模式则不受影响 —— 旋转正方形的内切圆恒在旋转正方形内部。
+//   界面在旋转滑块下方给出针对性提示，由用户决定是否提高缩放来填补。
+export function drawCrop(
   canvas: HTMLCanvasElement,
   img: HTMLImageElement,
   cropPx: PixelRect,
@@ -68,10 +87,12 @@ export function drawCircleCrop(
   }
 
   ctx.save();
-  // 圆形蒙版（画布坐标系，不受旋转影响）
-  ctx.beginPath();
-  ctx.arc(S / 2, S / 2, S / 2, 0, Math.PI * 2);
-  ctx.clip();
+  // 蒙版只作用于画布坐标系，不受旋转影响
+  if (CROP_SHAPE_DEF[params.shape].masked) {
+    ctx.beginPath();
+    ctx.arc(S / 2, S / 2, S / 2, 0, Math.PI * 2);
+    ctx.clip();
+  }
 
   ctx.translate(S / 2, S / 2);
   ctx.rotate((rotation * Math.PI) / 180);
@@ -102,8 +123,8 @@ export function drawCircleCrop(
   }
 }
 
-// 将原图按裁剪框（自然像素）+ 旋转 + 缩放，绘制为圆形输出图
-export async function renderCircleCrop(
+// 将原图按裁剪框（自然像素）+ 旋转 + 缩放，绘制为方形或圆形的输出图
+export async function renderCrop(
   img: HTMLImageElement,
   cropPx: PixelRect,
   params: EditParams,
@@ -114,7 +135,7 @@ export async function renderCircleCrop(
   const canvas = document.createElement('canvas');
   canvas.width = params.outputSize;
   canvas.height = params.outputSize;
-  drawCircleCrop(canvas, img, cropPx, params, rotation, scale, profile);
+  drawCrop(canvas, img, cropPx, params, rotation, scale, profile);
   return canvasToBlob(canvas, params.outputFormat);
 }
 
